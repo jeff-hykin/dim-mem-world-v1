@@ -15,6 +15,7 @@ use crate::memory::{Memory, MemberIndex};
 use crate::owl::{self, Owl};
 use crate::siglip::Member;
 use anyhow::{bail, Result};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -213,13 +214,23 @@ impl<'a> Engine<'a> {
 
         let place_started = Instant::now();
         let mut unplaced = 0;
-        let mut rendered: std::collections::HashMap<usize, Vec<u16>> = std::collections::HashMap::new();
+        // the lidar map drawn into each sighting's keyframe, all keyframes at once (each is independent)
+        let mut wanted: Vec<usize> = observations.iter().map(|o| o.frame).collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let rendered: std::collections::HashMap<usize, Vec<u16>> = match &self.memory.map {
+            Some(map) => wanted
+                .par_iter()
+                .map(|&f| {
+                    let frame = &self.memory.frames[f];
+                    (f, render_depth(map, crate::lidar::VOXEL_M, &frame.camera, &frame.pose, MIN_RANGE_M, MAX_RANGE_M))
+                })
+                .collect(),
+            None => Default::default(),
+        };
         for observation in &mut observations {
             let frame = &self.memory.frames[observation.frame];
-            observation.placed = self.memory.map.as_ref().and_then(|map| {
-                let depth = rendered.entry(observation.frame).or_insert_with(|| render_depth(map, crate::lidar::VOXEL_M, &frame.camera, &frame.pose, MIN_RANGE_M, MAX_RANGE_M));
-                place_box(depth, &frame.camera, observation.bbox, &frame.pose)
-            });
+            observation.placed = rendered.get(&observation.frame).and_then(|depth| place_box(depth, &frame.camera, observation.bbox, &frame.pose));
             if observation.placed.is_none() {
                 unplaced += 1;
             }
