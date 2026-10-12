@@ -4,9 +4,12 @@ use anyhow::Result;
 use memworld::memory::Memory;
 use memworld::owl::decode_jpeg;
 
+/// the scene is drawn up to this far above the floor (the ceiling would hide everything from above)
+const CEILING_CUT_M: f32 = 2.2;
+
 /// `u32 count`, `count` x `f32 x, y, z`, `count` x `u8 r, g, b`, little endian.
 pub fn cloud(memory: &Memory) -> Result<Vec<u8>> {
-    let points = memory.map.clone().unwrap_or_default();
+    let points = memworld::lidar::without_ceiling(memory.map.as_deref().unwrap_or_default(), CEILING_CUT_M);
     let colors = memworld::lidar::height_colors(&points);
     let mut out = Vec::with_capacity(4 + points.len() * 15);
     out.extend_from_slice(&(points.len() as u32).to_le_bytes());

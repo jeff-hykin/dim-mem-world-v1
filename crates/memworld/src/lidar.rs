@@ -54,6 +54,18 @@ pub fn decode(bytes: &[u8]) -> Vec<[f32; 3]> {
     bytes.chunks_exact(12).map(|b| std::array::from_fn(|i| f32::from_le_bytes(b[i * 4..i * 4 + 4].try_into().unwrap()))).collect()
 }
 
+/// The map without its ceiling, so it can be seen into from above: everything more than `above_floor_m` over the floor
+/// (taken as the 5th percentile of height; most of a map's points are floor) is left out.
+pub fn without_ceiling(points: &[[f32; 3]], above_floor_m: f32) -> Vec<[f32; 3]> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let mut z: Vec<f32> = points.iter().map(|p| p[2]).collect();
+    z.sort_by(f32::total_cmp);
+    let floor = z[z.len() / 20];
+    points.iter().copied().filter(|p| p[2] <= floor + above_floor_m).collect()
+}
+
 /// The Map Editor's height palette (purple, blue, cyan, green), stretched over the map's own height range (its 2nd to
 /// 98th percentile), so the floor and the ceiling read apart in any building.
 pub const PALETTE: [[u8; 3]; 4] = [[0xa0, 0x5c, 0xf0], [0x5a, 0x86, 0xf2], [0x3e, 0xd4, 0xe0], [0x6e, 0xe6, 0x8c]];
@@ -89,6 +101,15 @@ mod tests {
         assert_eq!(colors[0], PALETTE[0]);
         assert_eq!(colors[99], PALETTE[3]);
         assert!(height_colors(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_ceiling_is_cut_above_the_floor() {
+        let mut points: Vec<[f32; 3]> = (0..100).map(|i| [i as f32, 0.0, 0.0]).collect();
+        points.extend((0..20).map(|i| [i as f32, 0.0, 1.0]));
+        points.extend((0..50).map(|i| [i as f32, 0.0, 4.0]));
+        assert_eq!(without_ceiling(&points, 2.2).len(), 120);
+        assert!(without_ceiling(&[], 2.2).is_empty());
     }
 
     #[test]

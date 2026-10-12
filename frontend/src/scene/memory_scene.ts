@@ -18,7 +18,7 @@ void main() {
     vColor = color;
     vec4 view = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * view;
-    gl_PointSize = clamp(uSize * uPxPerMeter / max(0.05, -view.z), 1.5, 14.0);
+    gl_PointSize = clamp(uSize * uPxPerMeter / max(0.05, -view.z), 1.5, 9.0);
 }
 `
 const cloudFragment = /* glsl */ `
@@ -72,7 +72,7 @@ export class MemoryScene {
         this.#cloudMaterial = new THREE.ShaderMaterial({
             vertexShader: cloudVertex,
             fragmentShader: cloudFragment,
-            uniforms: { uSize: { value: 0.07 }, uPxPerMeter: viewer.pixelsPerMeter },
+            uniforms: { uSize: { value: 0.05 }, uPxPerMeter: viewer.pixelsPerMeter },
         })
         this.#path = new FatLines(viewer.resolution, { width: 2.5, color: PATH_COLOR, opacity: 0.8 })
         this.#path.object.renderOrder = 2
