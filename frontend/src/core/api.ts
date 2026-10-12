@@ -28,10 +28,13 @@ export interface Check {
     compatible: boolean
     missing: string[]
     color?: ImageStream
-    depth?: ImageStream
     colorInfo?: string
-    depthInfo?: string
+    /** the lidar the 3D map (and where things are) comes from */
+    lidar?: string
+    lidarFrame?: string
     worldFrame?: string
+    /** set when Generate runs lite_record's post_process first to get poses (why) */
+    postProcess?: string
     start: number
     end: number
     durationS: number
@@ -68,7 +71,7 @@ export interface Models {
     files: ModelFile[]
 }
 
-export type Phase = "idle" | "models" | "planning" | "depth" | "embedding" | "done" | "cancelled" | "failed"
+export type Phase = "idle" | "models" | "post_process" | "planning" | "map" | "embedding" | "done" | "cancelled" | "failed"
 
 export interface Progress {
     phase: Phase

@@ -18,8 +18,6 @@ pub enum Stream {
     Meta,
     /// one per keyframe: camera pose + intrinsics + a JPEG of the frame
     Frames,
-    /// one per keyframe: depth drawn into the color camera, at the JPEG's size
-    Depth,
     /// one per keyframe per member: fp16 per-patch embeddings
     Patches(usize),
     /// one per keyframe: OWLv2's image half (fp16 class embeddings, logit shift/scale, boxes per patch)
@@ -34,7 +32,7 @@ pub const MESSAGE_ENCODING: &str = "memworld.mwb1";
 
 impl Stream {
     pub fn all() -> Vec<Stream> {
-        let mut all = vec![Stream::Meta, Stream::Frames, Stream::Depth, Stream::Owl, Stream::Map];
+        let mut all = vec![Stream::Meta, Stream::Frames, Stream::Owl, Stream::Map];
         all.extend((0..crate::siglip::MEMBERS.len()).map(Stream::Patches));
         all
     }
@@ -43,7 +41,6 @@ impl Stream {
         match self {
             Stream::Meta => "meta".into(),
             Stream::Frames => "frames".into(),
-            Stream::Depth => "depth".into(),
             Stream::Patches(i) => format!("patches_{}", crate::siglip::MEMBERS[*i]),
             Stream::Owl => "owl".into(),
             Stream::Map => "map".into(),
@@ -214,7 +211,7 @@ mod tests {
         let frames = read(&recording, Stream::Frames).unwrap();
         assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), [1.5, 2.0]);
         assert_eq!(blob::decode(&frames[1].1).unwrap().0["n"], 2);
-        assert_eq!(read(&recording, Stream::Depth).unwrap().len(), 0);
+        assert_eq!(read(&recording, Stream::Map).unwrap().len(), 0);
         // the original channel is untouched and the file is still a valid, indexed mcap
         let mut tf = 0;
         recording.raw_each("/tf", |_, _, _, _| {

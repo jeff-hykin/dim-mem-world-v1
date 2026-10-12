@@ -6,14 +6,15 @@ import { api, type AppStatus, type Check, type Progress } from "../core/api.ts"
 import { bytes, clock, duration, gb, plural } from "../core/format.ts"
 import { Bar, ModelsProgress, Stats } from "./progress.tsx"
 
-export const RUNNING_PHASES = new Set(["models", "planning", "depth", "embedding"])
+export const RUNNING_PHASES = new Set(["models", "post_process", "planning", "map", "embedding"])
 export const isGenerating = (status: AppStatus | null) => !!status?.generation && RUNNING_PHASES.has(status.generation.phase)
 
 const PHASE_LABEL: Record<string, string> = {
     idle: "Not started",
     models: "Downloading the models first",
     planning: "Choosing keyframes",
-    depth: "Reading depth and camera poses",
+    post_process: "Estimating poses from the lidar (lite_record)",
+    map: "Building the 3D map from the lidar",
     embedding: "Embedding keyframes",
     done: "Done",
     cancelled: "Cancelled",
@@ -34,12 +35,12 @@ export function CheckCard({ check, onPickAnother }: { check: Check; onPickAnothe
                     <dl className="mw-check-grid">
                         <dt>color</dt>
                         <dd>{stream(check.color)}</dd>
-                        <dt>depth</dt>
-                        <dd>{stream(check.depth)}</dd>
+                        <dt>lidar</dt>
+                        <dd>{check.lidar ? `${check.lidar}${check.lidarFrame ? ` · ${check.lidarFrame}` : ""}` : "–"}</dd>
                         <dt>intrinsics</dt>
-                        <dd>{[check.colorInfo, check.depthInfo].filter(Boolean).join(", ") || "–"}</dd>
-                        <dt>world frame</dt>
-                        <dd>{check.worldFrame ?? "–"}</dd>
+                        <dd>{check.colorInfo ?? "–"}</dd>
+                        <dt>poses</dt>
+                        <dd>{check.postProcess ? "none yet: Generate estimates them from the lidar first (lite_record post_process)" : `tf, in ${check.worldFrame ?? "–"}`}</dd>
                         <dt>length</dt>
                         <dd>{duration(check.durationS)}</dd>
                     </dl>
@@ -49,7 +50,7 @@ export function CheckCard({ check, onPickAnother }: { check: Check; onPickAnothe
                         <ul className="mw-missing" data-missing>
                             {check.missing.map((sentence) => <li key={sentence}>{sentence}</li>)}
                         </ul>
-                        <Text small muted>A memory needs color images, depth images, the camera's intrinsics and where the camera was (a pose in a world frame). Record with a blueprint that publishes them, or pick another recording.</Text>
+                        <Text small muted>A memory needs color images, the camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a lidar + IMU to estimate them from). Record with a blueprint that publishes them, or pick another recording.</Text>
                     </>
                 )}
                 {check.notes.length > 0 && (
@@ -91,7 +92,7 @@ function GenerationProgress({ progress, status }: { progress: Progress; status: 
                 ]}
             />
             {progress.message && <Text small muted>{progress.message}</Text>}
-            {progress.skipped > 0 && <Text small muted>{`${plural(progress.skipped, "keyframe")} skipped (no depth or pose near them)`}</Text>}
+            {progress.skipped > 0 && <Text small muted>{`${plural(progress.skipped, "keyframe")} skipped (no camera pose near them)`}</Text>}
         </>
     )
 }
@@ -157,8 +158,8 @@ export function Setup({ status, onStatus, onPickAnother }: { status: AppStatus; 
                     title={generating ? "Generating the memory" : partial ? "Finish the memory" : "Generate the memory"}
                     description={
                         generating
-                            ? "Each keyframe's depth and its three embeddings are written into the recording itself, so it carries its own memory."
-                            : "Every N seconds of the recording becomes a keyframe: its picture, depth and pose are embedded and written into the recording in place. Nothing else changes in it."
+                            ? "The lidar map and each keyframe's embeddings are written into the recording itself, so it carries its own memory."
+                            : "Every N seconds of the recording becomes a keyframe: its picture and pose are embedded and written into the recording in place, with the lidar's 3D map. Nothing else changes in it."
                     }
                     data-step="generate"
                 >

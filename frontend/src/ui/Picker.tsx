@@ -69,7 +69,7 @@ export function Picker({ current, onOpen, onBack }: { current: string | null; on
             <div className="mw-hero">
                 <h1>Pick a recording</h1>
                 <p className="mw-lead">
-                    Memory World remembers what a robot saw. Pick a recording with color and depth images; it gets a memory you can ask questions like
+                    Memory World remembers what a robot saw. Pick a recording with a camera and a lidar; it gets a memory you can ask questions like
                     “where's the traffic cone?”, answered with boxes in 3D.
                 </p>
             </div>

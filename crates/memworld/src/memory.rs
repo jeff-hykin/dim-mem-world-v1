@@ -1,5 +1,5 @@
 //! A recording's memory, read back from inside it and held in RAM for questions: every keyframe (pose, intrinsics,
-//! JPEG, depth) and, per member, every patch embedding as one matrix (a question is one matrix-vector product per
+//! JPEG, OWLv2's image half), the lidar map, and, per member, every patch embedding as one matrix (a question is one matrix-vector product per
 //! member, a fraction of a second, no database round trips).
 use crate::blob;
 use crate::camera::Pinhole;
@@ -20,21 +20,11 @@ pub struct Frame {
     pub pose: Iso,
     pub camera: Pinhole,
     pub jpeg: Vec<u8>,
-    /// zstd of u16 LE millimeters at the camera's size; empty when the keyframe had no depth
-    pub depth: Vec<u8>,
     /// OWLv2's image half for this keyframe (fp16, owl::Features::decode); empty for a memory made without it
     pub owl: Vec<u8>,
 }
 
 impl Frame {
-    pub fn depth_mm(&self) -> Option<Vec<u16>> {
-        if self.depth.is_empty() {
-            return None;
-        }
-        let raw = zstd::decode_all(&self.depth[..]).ok()?;
-        Some(raw.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect())
-    }
-
     pub fn position(&self) -> [f64; 3] {
         let t = self.pose.translation.vector;
         [t.x, t.y, t.z]
@@ -140,13 +130,6 @@ pub fn load(recording: &Recording) -> Result<Option<Memory>> {
     let Some(meta) = current_meta(recording)? else { return Ok(None) };
     let generation = meta["generation"].as_u64().context("meta without generation")?;
     let mine = |header: &Value| header["generation"].as_u64() == Some(generation);
-    let mut depth: HashMap<u64, Vec<u8>> = HashMap::new();
-    for (ts, bytes) in store::read(recording, Stream::Depth)? {
-        let (header, body) = blob::decode(&bytes)?;
-        if mine(&header) {
-            depth.insert(key(ts), body.to_vec());
-        }
-    }
     let mut owl: HashMap<u64, Vec<u8>> = HashMap::new();
     for (ts, bytes) in store::read(recording, Stream::Owl)? {
         let (header, body) = blob::decode(&bytes)?;
@@ -177,7 +160,7 @@ pub fn load(recording: &Recording) -> Result<Option<Memory>> {
         }
         let camera: Pinhole = serde_json::from_value(header["camera"].clone())?;
         let pose = pose_of(&header).context("frame without a pose")?;
-        frames.push(Frame { ts, pose, camera, jpeg: body.to_vec(), depth: depth.remove(&key(ts)).unwrap_or_default(), owl: owl.remove(&key(ts)).unwrap_or_default() });
+        frames.push(Frame { ts, pose, camera, jpeg: body.to_vec(), owl: owl.remove(&key(ts)).unwrap_or_default() });
     }
     frames.sort_by(|a, b| a.ts.total_cmp(&b.ts));
     let mut members = Vec::new();

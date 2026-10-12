@@ -1,9 +1,8 @@
 //! Generation: every `every_seconds` of the color stream becomes a keyframe, and each keyframe is written INTO the
-//! recording as a frame (camera pose from tf, intrinsics, a JPEG), its depth drawn into the color camera, and one
+//! recording as a frame (camera pose from tf, intrinsics, a JPEG), OWLv2's image half, and one
 //! per-patch embedding grid per SigLIP2 member. Batches of keyframes are appended as they finish, so progress
 //! survives a stop: running it again resumes the same generation where it left off.
 use crate::blob;
-use crate::camera::{register_depth, Pinhole};
 use crate::compat::{self, Setup};
 use crate::owl::Owl;
 use crate::siglip::{Member, MEMBERS};
@@ -24,24 +23,22 @@ use std::time::Instant;
 pub struct Options {
     /// one keyframe per this many seconds of the color stream
     pub every_seconds: f64,
-    /// width of the stored frame JPEG (and its depth); height keeps the aspect ratio
+    /// width of the stored frame JPEG; height keeps the aspect ratio
     pub image_width: u32,
-    /// depth readings farther than this are dropped
-    pub max_depth_m: f32,
     /// keyframes per append
     pub batch: usize,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { every_seconds: 1.0, image_width: 640, max_depth_m: 8.0, batch: 16 }
+        Options { every_seconds: 1.0, image_width: 640, batch: 16 }
     }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
-    /// planning, depth, embedding, done, cancelled, failed
+    /// post_process, planning, map, embedding, done, cancelled, failed
     pub phase: String,
     pub done: u64,
     pub total: u64,
@@ -64,17 +61,6 @@ pub fn pick_keyframes(times: &[f64], every: f64) -> Vec<f64> {
         }
     }
     picked
-}
-
-/// For each wanted time, the nearest of `times` within `tolerance`.
-pub fn nearest(times: &[f64], wanted: &[f64], tolerance: f64) -> Vec<Option<f64>> {
-    wanted
-        .iter()
-        .map(|&w| {
-            let i = times.partition_point(|&t| t < w);
-            [i.checked_sub(1), Some(i)].into_iter().flatten().filter_map(|j| times.get(j).copied()).filter(|t| (t - w).abs() <= tolerance).min_by(|a, b| (a - w).abs().total_cmp(&(b - w).abs()))
-        })
-        .collect()
 }
 
 /// The newest generation's meta and the times it already holds, when its settings match `options` (to resume).
@@ -133,8 +119,26 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
     if members.len() != MEMBERS.len() {
         bail!("generation needs all {} SigLIP2 members", MEMBERS.len());
     }
-    let recording = Recording::open(path)?;
-    let (check, setup) = compat::check(&recording)?;
+    let mut recording = Recording::open(path)?;
+    let (mut check, mut setup) = compat::check(&recording)?;
+    // a raw lidar + IMU recording gets its poses from lite_record first (in place), then is checked again
+    if let Some(reason) = check.post_process.clone() {
+        drop(recording);
+        progress.phase = "post_process".into();
+        progress.message = reason;
+        report(&progress);
+        let binary = crate::lite_record::binary()?;
+        crate::lite_record::post_process(&binary, path, &mut |stage| {
+            progress.done = stage.percent.round() as u64;
+            progress.total = 100;
+            progress.message = format!("lite_record, step {} of {}: {}", stage.index + 1, stage.count, stage.name);
+            report(&progress);
+        }, cancel)?;
+        recording = Recording::open(path)?;
+        (check, setup) = compat::check(&recording)?;
+        progress.done = 0;
+        progress.total = 0;
+    }
     let setup = setup.with_context(|| format!("this recording can't be used: missing {}", check.missing.join("; ")))?;
     let times = recording.timestamps(&setup.color.name)?;
     let planned = pick_keyframes(&times, options.every_seconds);
@@ -157,7 +161,7 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
             "options": options,
             "planned": planned.len(),
             "color": setup.color.name,
-            "depth": setup.depth.name,
+            "lidar": setup.lidar,
             "colorFrame": setup.color.frame_id,
             "worldFrame": setup.world_frame,
             "members": members.iter().map(|m| json!({ "key": m.key, "repo": m.spec.repo, "dim": m.spec.dim })).collect::<Vec<_>>(),
@@ -173,7 +177,8 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
     let recording = Recording::open(path)?;
 
     // the lidar's voxel map (the scene answers are drawn in), once per generation
-    if let Some(lidar) = setup.lidar.as_deref() {
+    {
+        let lidar = setup.lidar.as_str();
         let has_map = store::read(&recording, Stream::Map)?.iter().any(|(_, b)| blob::decode(b).map(|(h, _)| h["generation"].as_u64() == Some(generation)).unwrap_or(false));
         if !has_map {
             progress.phase = "map".into();
@@ -190,36 +195,6 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
         }
     }
     let recording = Recording::open(path)?;
-
-    // depth first: each keyframe's nearest depth image, drawn into the color camera at the JPEG's size
-    progress.phase = "depth".into();
-    progress.message = format!("matching depth to {} keyframes", todo.len());
-    report(&progress);
-    let depth_times = recording.timestamps(&setup.depth.name)?;
-    let matches = nearest(&depth_times, &todo, 0.1);
-    let mut wanted: HashMap<u64, Vec<f64>> = HashMap::new();
-    for (keyframe, depth_ts) in todo.iter().zip(&matches) {
-        if let Some(depth_ts) = depth_ts {
-            wanted.entry(key(*depth_ts)).or_default().push(*keyframe);
-        }
-    }
-    let mut depths: HashMap<u64, Vec<u8>> = HashMap::new();
-    let depth_camera: Pinhole = setup.depth_camera;
-    recording.raw_each_where(
-        &setup.depth.name,
-        |ts| wanted.contains_key(&key(ts)),
-        |ts, encoding, kind, payload| {
-            let Ok(image) = decode_image(encoding, kind, payload) else { return Ok(true) };
-            let Ok(depth) = image.to_depth() else { return Ok(true) };
-            let registered = register_depth(&depth, &depth_camera, &thumb_camera, &setup.color_from_depth, options.max_depth_m);
-            let raw: Vec<u8> = registered.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let packed = zstd::encode_all(&raw[..], 3)?;
-            for keyframe in wanted.get(&key(ts)).into_iter().flatten() {
-                depths.insert(key(*keyframe), packed.clone());
-            }
-            Ok(!cancel.load(Ordering::Relaxed))
-        },
-    )?;
 
     progress.phase = "embedding".into();
     progress.message = format!("embedding {} keyframes with {} models + OWLv2", todo.len(), members.len());
@@ -245,20 +220,14 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
                 let boxes = owl.features(&rgb)?;
                 let thumb = crate::siglip::resize_rgb(&rgb, thumb_camera.width, thumb_camera.height);
                 let (translation, rotation) = tf::parts(&pose);
-                let depth = depths.remove(&key(ts));
                 let shapes: BTreeMap<&str, [u32; 2]> = members.iter().zip(&grids).map(|(m, g)| (m.key.as_str(), [g.rows, g.cols])).collect();
                 let frame = json!({
                     "generation": generation,
                     "pose": { "translation": translation, "rotation": rotation },
                     "camera": thumb_camera,
                     "grids": shapes,
-                    "depth": depth.is_some(),
                 });
                 writer.put(Stream::Frames, ts, blob::encode(&frame, &jpeg(&thumb)?));
-                if let Some(depth) = depth {
-                    let header = json!({ "generation": generation, "width": thumb_camera.width, "height": thumb_camera.height, "unit": "mm", "codec": "zstd-u16le" });
-                    writer.put(Stream::Depth, ts, blob::encode(&header, &depth));
-                }
                 writer.put(Stream::Owl, ts, blob::encode(&json!({ "generation": generation, "patches": crate::owl::PATCHES, "dim": crate::owl::DIM, "dtype": "f16" }), &boxes.encode()));
                 for (i, grid) in grids.iter().enumerate() {
                     let header = json!({ "generation": generation, "rows": grid.rows, "cols": grid.cols, "dim": grid.dim, "dtype": "f16" });
@@ -342,11 +311,5 @@ mod tests {
         assert_eq!(picked.len(), 4);
         assert!(picked.windows(2).all(|w| w[1] - w[0] >= 1.0 - 1e-6));
         assert_eq!(pick_keyframes(&[], 1.0), Vec::<f64>::new());
-    }
-
-    #[test]
-    fn nearest_depth_is_within_tolerance_or_none() {
-        let depth = [0.0, 0.033, 0.066, 0.5];
-        assert_eq!(nearest(&depth, &[0.04, 0.3, 0.49, 2.0], 0.1), vec![Some(0.033), None, Some(0.5), None]);
     }
 }

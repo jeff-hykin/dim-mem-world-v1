@@ -1,7 +1,7 @@
-//! Pinhole geometry: the depth camera's readings drawn into the color camera (so a box in the color frame has depth
-//! behind it), and a box's depth turned into world points. Camera frames are optical (+z forward, +x right, +y down).
+//! Pinhole geometry: the lidar map drawn into a keyframe's camera (so a box in the image has the lidar's depth behind
+//! it), and a box's depth turned into world points. Camera frames are optical (+z forward, +x right, +y down).
 use crate::tf::Iso;
-use dimos_recording::image::{CameraInfo, Depth};
+use dimos_recording::image::CameraInfo;
 use nalgebra::Point3;
 use serde::{Deserialize, Serialize};
 
@@ -40,57 +40,40 @@ impl Pinhole {
     }
 }
 
-/// Depth (meters) from the depth camera, drawn into a `target` color camera: each reading is lifted to 3D, moved by
-/// `color_from_depth` and projected; the nearest wins a pixel. Millimeters, 0 = nothing seen there. Readings beyond
-/// `max_m` are dropped (RealSense's far readings are mostly noise).
-pub fn register_depth(depth: &Depth, depth_camera: &Pinhole, target: &Pinhole, color_from_depth: &Iso, max_m: f32) -> Vec<u16> {
-    let camera = depth_camera.scaled(depth.width, depth.height);
-    let mut out = vec![u16::MAX; (target.width * target.height) as usize];
-    // a coarser target than the source: step over the source so each target pixel gets about one reading
-    let step = ((depth.width as f64 / target.width as f64).floor() as u32).max(1);
-    for v in (0..depth.height).step_by(step as usize) {
-        for u in (0..depth.width).step_by(step as usize) {
-            let z = depth.at(u, v);
-            if z <= 0.05 || z > max_m {
-                continue;
+/// The lidar map as this camera would see it: every map voxel (world frame) moved into the camera by
+/// `world_from_camera`'s inverse and projected, drawn as a square of its own projected size so near surfaces cover what
+/// is behind them (a z-buffer: nearest wins). Millimeters, 0 = nothing there. Points nearer than `min_m` or farther
+/// than `max_m` are left out.
+pub fn render_depth(points: &[[f32; 3]], voxel_m: f64, camera: &Pinhole, world_from_camera: &Iso, min_m: f64, max_m: f64) -> Vec<u16> {
+    let (w, h) = (camera.width as i64, camera.height as i64);
+    let mut out = vec![u16::MAX; (w * h) as usize];
+    let camera_from_world = world_from_camera.inverse();
+    for p in points {
+        let q = camera_from_world * Point3::new(p[0] as f64, p[1] as f64, p[2] as f64);
+        if q.z < min_m || q.z > max_m {
+            continue;
+        }
+        let Some((u, v)) = camera.project(&q) else { continue };
+        let half = ((camera.fx * voxel_m / q.z) / 2.0).ceil().max(1.0) as i64;
+        let (cu, cv) = (u.floor() as i64, v.floor() as i64);
+        if cu + half < 0 || cv + half < 0 || cu - half >= w || cv - half >= h {
+            continue;
+        }
+        let mm = (q.z * 1000.0).round().clamp(1.0, 65534.0) as u16;
+        for y in (cv - half).max(0)..(cv + half).min(h) {
+            let row = (y * w) as usize;
+            for x in (cu - half).max(0)..(cu + half).min(w) {
+                let at = row + x as usize;
+                out[at] = out[at].min(mm);
             }
-            let point = color_from_depth * camera.unproject(u as f64 + 0.5, v as f64 + 0.5, z as f64);
-            let Some((x, y)) = target.project(&point) else { continue };
-            let (x, y) = (x.floor(), y.floor());
-            if x < 0.0 || y < 0.0 || x >= target.width as f64 || y >= target.height as f64 {
-                continue;
-            }
-            let at = (y as u32 * target.width + x as u32) as usize;
-            let mm = (point.z * 1000.0).round().clamp(1.0, 65534.0) as u16;
-            out[at] = out[at].min(mm);
         }
     }
-    fill_single_holes(&mut out, target.width, target.height);
     out.iter_mut().for_each(|v| {
         if *v == u16::MAX {
             *v = 0
         }
     });
     out
-}
-
-/// A pixel with no reading between two horizontal or vertical neighbours that have one takes their nearer value: the
-/// splat leaves a speckle of one-pixel holes where the cameras' grids don't line up.
-fn fill_single_holes(depth: &mut [u16], width: u32, height: u32) {
-    let (w, h) = (width as usize, height as usize);
-    let source = depth.to_vec();
-    for y in 1..h.saturating_sub(1) {
-        for x in 1..w.saturating_sub(1) {
-            let at = y * w + x;
-            if source[at] != u16::MAX {
-                continue;
-            }
-            let pairs = [(source[at - 1], source[at + 1]), (source[at - w], source[at + w])];
-            if let Some(best) = pairs.iter().filter(|(a, b)| *a != u16::MAX && *b != u16::MAX && a.abs_diff(*b) < 150).map(|(a, b)| (*a).min(*b)).min() {
-                depth[at] = best;
-            }
-        }
-    }
 }
 
 /// What a 2D box sees in 3D: the world points of the readings inside it that belong to the thing in front.
@@ -177,18 +160,28 @@ mod tests {
     }
 
     #[test]
-    fn depth_registers_through_the_offset_between_cameras() {
-        // a flat wall 2 m away seen by a depth camera 0.1 m to the color camera's right (+x)
+    fn the_map_renders_nearest_first_into_the_camera() {
+        // camera at the origin looking along +z (world = optical): a wall at 4 m behind a post at 2 m
         let cam = camera();
-        let depth = Depth { width: 100, height: 100, meters: vec![2.0; 100 * 100] };
-        let color_from_depth = iso([0.1, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]);
-        let registered = register_depth(&depth, &cam, &cam, &color_from_depth, 10.0);
-        // the wall is still 2 m; it shifts 0.1 m * 100 px / 2 m = 5 px right, so the left 5 columns see nothing
-        assert_eq!(registered[50 * 100 + 50], 2000);
-        assert_eq!(registered[50 * 100 + 2], 0);
-        assert_eq!(registered[50 * 100 + 6], 2000);
+        let mut points = Vec::new();
+        for y in -20..20 {
+            for x in -20..20 {
+                points.push([x as f32 * 0.05, y as f32 * 0.05, 4.0]);
+            }
+        }
+        for y in -5..5 {
+            for x in -1..1 {
+                points.push([x as f32 * 0.05, y as f32 * 0.05, 2.0]);
+            }
+        }
+        let depth = render_depth(&points, 0.05, &cam, &Iso::identity(), 0.3, 10.0);
+        // the image center sees the post, not the wall behind it; off to the side, the wall
+        assert_eq!(depth[50 * 100 + 50], 2000);
+        assert_eq!(depth[50 * 100 + 60], 4000);
+        // nothing beyond the wall's edge (0.95 m at 4 m = 24 px from center)
+        assert_eq!(depth[50 * 100 + 90], 0);
         // too far is dropped
-        assert!(register_depth(&depth, &cam, &cam, &color_from_depth, 1.5).iter().all(|&v| v == 0));
+        assert!(render_depth(&points, 0.05, &cam, &Iso::identity(), 0.3, 1.0).iter().all(|&v| v == 0));
     }
 
     #[test]

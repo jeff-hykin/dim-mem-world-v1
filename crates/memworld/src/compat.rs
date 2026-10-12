@@ -1,12 +1,14 @@
-//! Can Memory World use this recording? It needs color images, depth images, both cameras' intrinsics (CameraInfo)
-//! and a tf path from a world frame (map / world / odom) to the color camera. `check` finds each one (by what the
-//! messages hold, not only by name) and says exactly which are missing.
+//! Can Memory World use this recording? It needs color images, the color camera's intrinsics (CameraInfo), a lidar
+//! (PointCloud2), and poses: a tf path from a world frame (map / world / odom) to the camera and to the lidar. A raw
+//! lidar + IMU recording with no poses yet (lite_record's) is usable too: generation runs lite_record's post_process
+//! on it first, in place, which adds the odometry and the sensors' frame tree. `check` finds each input by what the
+//! messages hold and says exactly what's missing.
 use crate::camera::Pinhole;
 use crate::store;
-use crate::tf::{iso, Iso, TfTree};
+use crate::tf::{iso, TfTree};
 use anyhow::Result;
-use dimos_recording::image::{decode_camera_info, decode_image, CameraInfo, StoredImage};
-use dimos_recording::{Format, Kind, Recording};
+use dimos_recording::image::{decode_camera_info, decode_image, CameraInfo};
+use dimos_recording::{Format, Kind, Recording, StreamInfo};
 use serde::Serialize;
 
 pub const WORLD_FRAMES: [&str; 3] = ["map", "world", "odom"];
@@ -31,12 +33,13 @@ pub struct Check {
     /// one plain sentence per missing input
     pub missing: Vec<String>,
     pub color: Option<ImageStream>,
-    pub depth: Option<ImageStream>,
     pub color_info: Option<String>,
-    pub depth_info: Option<String>,
-    pub world_frame: Option<String>,
-    /// a lidar (PointCloud2) stream: the scene answers are drawn in (optional)
+    /// the lidar the map is built from (its motion-corrected copy when post_process made one)
     pub lidar: Option<String>,
+    pub lidar_frame: Option<String>,
+    pub world_frame: Option<String>,
+    /// set when generation must run lite_record's post_process first (why)
+    pub post_process: Option<String>,
     pub start: f64,
     pub end: f64,
     pub duration_s: f64,
@@ -47,13 +50,10 @@ pub struct Check {
 #[derive(Clone)]
 pub struct Setup {
     pub color: ImageStream,
-    pub depth: ImageStream,
     pub color_camera: Pinhole,
-    pub depth_camera: Pinhole,
+    pub lidar: String,
     pub world_frame: String,
-    pub color_from_depth: Iso,
     pub tf: TfTree,
-    pub lidar: Option<String>,
 }
 
 fn first_message(recording: &Recording, stream: &str) -> Option<(String, String, Vec<u8>)> {
@@ -63,12 +63,6 @@ fn first_message(recording: &Recording, stream: &str) -> Option<(String, String,
         Ok(false)
     });
     found
-}
-
-fn image_stream(recording: &Recording, name: &str, count: u64) -> Option<(ImageStream, StoredImage)> {
-    let (encoding, kind, payload) = first_message(recording, name)?;
-    let image = decode_image(&encoding, &kind.replace('.', "/"), &payload).ok()?;
-    Some((ImageStream { name: name.into(), encoding: image.encoding.clone(), width: image.width, height: image.height, frame_id: image.header.frame_id.trim_start_matches('/').into(), count }, image))
 }
 
 fn rank_color(name: &str) -> i32 {
@@ -85,23 +79,6 @@ fn rank_color(name: &str) -> i32 {
     }
 }
 
-fn rank_depth(name: &str) -> i32 {
-    let n = name.to_ascii_lowercase();
-    if n.contains("thumb") || n.contains("filled") || n.contains("colorized") {
-        return -1;
-    }
-    if n.contains("depth") {
-        2
-    } else {
-        1
-    }
-}
-
-/// A stored image's frame size can differ from its CameraInfo's (a resized stream): intrinsics follow the image.
-fn camera_for(info: &CameraInfo, stream: &ImageStream) -> Pinhole {
-    Pinhole::from_info(info).scaled(stream.width, stream.height)
-}
-
 pub fn tf_tree(recording: &Recording) -> Result<TfTree> {
     let mut tree = TfTree::default();
     for (_, edge) in recording.tf_edges_logged()? {
@@ -111,37 +88,51 @@ pub fn tf_tree(recording: &Recording) -> Result<TfTree> {
     Ok(tree)
 }
 
+/// lite_record's rule for a raw lidar recording: a PointCloud2 and an Imu under one topic prefix, and no odometry
+/// anywhere to place its scans (the Map Editor runs the same check before its own post_process).
+pub fn needs_post_process(streams: &[StreamInfo]) -> Option<String> {
+    let prefix = |name: &str| name.rsplit_once('/').map_or(String::new(), |(prefix, _)| prefix.to_string());
+    let is_imu = |s: &StreamInfo| s.type_name.replace("/msg/", ".").replace('/', ".") == "sensor_msgs.Imu";
+    let lidar = streams
+        .iter()
+        .filter(|s| s.kind == Kind::Cloud && s.derived_from.is_none())
+        .find(|cloud| streams.iter().any(|imu| is_imu(imu) && prefix(&imu.name) == prefix(&cloud.name)))?;
+    if streams.iter().any(|s| s.kind == Kind::Odometry && s.count > 0) {
+        return None;
+    }
+    Some(format!("{} has an IMU beside it but nothing places its scans yet: lite_record's post_process estimates the odometry and the sensors' frame tree first (in place)", lidar.name))
+}
+
+/// The lidar to map from: a motion-corrected copy (`derived_from` set, what post_process writes) over the raw scans,
+/// then the busiest cloud.
+fn pick_lidar(streams: &[StreamInfo]) -> Option<&StreamInfo> {
+    streams
+        .iter()
+        .filter(|s| s.kind == Kind::Cloud && !store::is_ours(&s.name) && s.count > 0)
+        .max_by_key(|s| (s.derived_from.is_some(), s.name.to_ascii_lowercase().contains("lidar"), s.count))
+}
+
 pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
     let streams = recording.streams()?;
     let format = recording.format();
     let mut missing = Vec::new();
     let mut notes = Vec::new();
+
     let mut colors = Vec::new();
-    let mut depths = Vec::new();
-    for stream in streams.iter().filter(|s| matches!(s.kind, Kind::Image | Kind::CompressedImage) && !store::is_ours(&s.name) && s.count > 0) {
-        let Some((info, image)) = image_stream(recording, &stream.name, stream.count) else {
+    for stream in streams.iter().filter(|s| matches!(s.kind, Kind::Image | Kind::CompressedImage) && !store::is_ours(&s.name) && s.count > 0 && rank_color(&s.name) >= 0) {
+        let Some((encoding, kind, payload)) = first_message(recording, &stream.name) else { continue };
+        let Ok(image) = decode_image(&encoding, &kind.replace('.', "/"), &payload) else {
             notes.push(format!("{}: couldn't read its first image", stream.name));
             continue;
         };
-        if image.is_depth() {
-            depths.push(info);
-        } else if image.to_rgb().is_ok() {
-            colors.push(info);
-        } else {
-            notes.push(format!("{}: {} images aren't color or depth", stream.name, image.encoding));
+        if !image.is_depth() && image.to_rgb().is_ok() {
+            colors.push(ImageStream { name: stream.name.clone(), encoding: image.encoding.clone(), width: image.width, height: image.height, frame_id: image.header.frame_id.trim_start_matches('/').into(), count: stream.count });
         }
     }
-    colors.retain(|c| rank_color(&c.name) >= 0);
     colors.sort_by_key(|c| (-rank_color(&c.name), std::cmp::Reverse(c.count)));
-    depths.retain(|d| rank_depth(&d.name) >= 0);
-    depths.sort_by_key(|d| (-rank_depth(&d.name), std::cmp::Reverse(d.count)));
     let color = colors.into_iter().next();
-    let depth = depths.into_iter().next();
     if color.is_none() {
         missing.push("color images (a sensor_msgs Image or CompressedImage stream)".into());
-    }
-    if depth.is_none() {
-        missing.push("depth images (a 16UC1 / 32FC1 Image stream)".into());
     }
 
     let mut infos: Vec<(String, CameraInfo)> = Vec::new();
@@ -152,61 +143,58 @@ pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
             }
         }
     }
-    let info_for = |image: &ImageStream, hint: &str| -> Option<(String, CameraInfo)> {
+    let color_info = color.as_ref().and_then(|c| {
         infos
             .iter()
-            .find(|(_, info)| !image.frame_id.is_empty() && info.header.frame_id.trim_start_matches('/') == image.frame_id)
-            .or_else(|| infos.iter().find(|(name, _)| name.to_ascii_lowercase().contains(hint)))
+            .find(|(_, info)| !c.frame_id.is_empty() && info.header.frame_id.trim_start_matches('/') == c.frame_id)
+            .or_else(|| infos.iter().find(|(name, _)| name.to_ascii_lowercase().contains("color")))
+            .or_else(|| infos.iter().find(|(name, _)| !name.to_ascii_lowercase().contains("depth")))
             .cloned()
-    };
-    let color_info = color.as_ref().and_then(|c| info_for(c, "color").or_else(|| infos.iter().find(|(n, _)| !n.contains("depth")).cloned()));
-    let depth_info = depth.as_ref().and_then(|d| info_for(d, "depth"));
+    });
     if let (Some(c), None) = (&color, &color_info) {
-        missing.push(format!("the color camera's intrinsics (a CameraInfo stream for frame {})", c.frame_id));
-    }
-    if let (Some(d), None) = (&depth, &depth_info) {
-        missing.push(format!("the depth camera's intrinsics (a CameraInfo stream for frame {})", d.frame_id));
+        missing.push(format!("the camera's intrinsics (a CameraInfo stream for frame {})", c.frame_id));
     }
 
+    let lidar = pick_lidar(&streams);
+    let lidar_frame = lidar.and_then(|l| {
+        let mut frame = None;
+        let _ = recording.for_each(&l.name, |_, message, _| {
+            if let dimos_recording::Message::Cloud(cloud) = message {
+                frame = Some(cloud.frame_id.trim_start_matches('/').to_string());
+            }
+            Ok(false)
+        });
+        frame
+    });
+    if lidar.is_none() {
+        missing.push("a lidar (a PointCloud2 stream): the map, and where things are, come from it".into());
+    }
+
+    let post_process = needs_post_process(&streams);
     let tf = tf_tree(recording)?;
     let times = color.as_ref().map(|c| recording.timestamps(&c.name)).transpose()?.unwrap_or_default();
     let (start, end) = (times.first().copied().unwrap_or(0.0), times.last().copied().unwrap_or(0.0));
     let middle = times.get(times.len() / 2).copied().unwrap_or(0.0);
     let mut world_frame = None;
-    if let Some(c) = &color {
-        world_frame = WORLD_FRAMES.iter().find(|w| tf.lookup(w, &c.frame_id, middle, 0.5).is_some()).map(|w| w.to_string());
+    if let Some(reason) = &post_process {
+        notes.push(reason.clone());
+    } else if let (Some(c), Some(lf)) = (&color, &lidar_frame) {
+        let reaches = |w: &&str| tf.lookup(w, &c.frame_id, middle, 0.5).is_some() && tf.lookup(w, lf, middle, 0.5).is_some();
+        world_frame = WORLD_FRAMES.iter().find(|w| reaches(w)).map(|w| w.to_string());
         if tf.is_empty() {
-            missing.push("a camera pose: the recording has no tf".into());
+            missing.push("poses: the recording has no tf (and no lidar + IMU for lite_record to estimate them from)".into());
         } else if world_frame.is_none() {
-            missing.push(format!("a camera pose: no tf path from map, world or odom to {}", c.frame_id));
+            missing.push(format!("poses: no tf path from map, world or odom to both the camera ({}) and the lidar ({lf})", c.frame_id));
         }
-    }
-    let color_from_depth = match (&color, &depth) {
-        (Some(c), Some(d)) if c.frame_id == d.frame_id => Some(Iso::identity()),
-        (Some(c), Some(d)) => {
-            let found = tf.lookup(&c.frame_id, &d.frame_id, middle, 0.5);
-            if found.is_none() {
-                missing.push(format!("where the depth camera sits: no tf between {} and {}", d.frame_id, c.frame_id));
-            }
-            found
-        }
-        _ => None,
-    };
-    let lidar = streams.iter().filter(|s| s.kind == Kind::Cloud && !store::is_ours(&s.name) && s.count > 0).max_by_key(|s| (s.name.to_ascii_lowercase().contains("lidar"), s.count)).map(|s| s.name.clone());
-    if lidar.is_none() {
-        notes.push("no lidar: the 3D scene is drawn from the keyframes' depth".into());
     }
     let compatible = missing.is_empty();
-    let setup = match (compatible, &color, &depth, &color_info, &depth_info, &world_frame, color_from_depth) {
-        (true, Some(c), Some(d), Some((_, ci)), Some((_, di)), Some(world), Some(extrinsic)) => Some(Setup {
+    let setup = match (compatible, post_process.is_none(), &color, &color_info, lidar, &world_frame) {
+        (true, true, Some(c), Some((_, info)), Some(l), Some(world)) => Some(Setup {
             color: c.clone(),
-            depth: d.clone(),
-            color_camera: camera_for(ci, c),
-            depth_camera: camera_for(di, d),
+            color_camera: Pinhole::from_info(info).scaled(c.width, c.height),
+            lidar: l.name.clone(),
             world_frame: world.clone(),
-            color_from_depth: extrinsic,
             tf,
-            lidar: lidar.clone(),
         }),
         _ => None,
     };
@@ -216,11 +204,11 @@ pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
         compatible,
         missing,
         color,
-        depth,
         color_info: color_info.map(|c| c.0),
-        depth_info: depth_info.map(|d| d.0),
+        lidar: lidar.map(|l| l.name.clone()),
+        lidar_frame,
         world_frame,
-        lidar,
+        post_process,
         start,
         end,
         duration_s: end - start,

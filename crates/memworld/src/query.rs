@@ -7,16 +7,20 @@
 //!    keeps the floor beside a cone out: each model's false heat lands in different cells;
 //! 3. the frames with the most agreed heat go to OWLv2 with the same question; a box counts when agreed cells fall
 //!    inside it (with no OWLv2, the agreed regions themselves are the boxes);
-//! 4. each box's depth (drawn into the color camera at generation) is lifted to the world with the frame's pose:
-//!    a center, a size, a height;
+//! 4. the lidar map is drawn into the keyframe's camera (nearest surface wins), and what it shows inside each box is
+//!    lifted to the world with the frame's pose: a center, a size, a height;
 //! 5. sightings closer than a place radius merge into one place. The count of places answers "how many".
-use crate::camera::{place_box, Placed};
+use crate::camera::{place_box, render_depth, Placed};
 use crate::memory::{Memory, MemberIndex};
 use crate::owl::{self, Owl};
 use crate::siglip::Member;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
+
+/// the lidar map is drawn into a keyframe between these distances (nearer is the robot itself)
+const MIN_RANGE_M: f64 = 0.3;
+const MAX_RANGE_M: f64 = 20.0;
 
 pub const BACKGROUND: [&str; 7] = ["floor", "a wall", "the ceiling", "a room", "an object", "a photo", "a door"];
 
@@ -103,7 +107,7 @@ pub struct Answer {
     pub places: Vec<Place>,
     pub observations: Vec<Observation>,
     pub candidates: Vec<Candidate>,
-    /// boxes found but with no depth behind them (not placed, not counted)
+    /// boxes found but with no lidar map behind them (not placed, not counted)
     pub unplaced: usize,
     pub world_frame: String,
     pub timings: Timings,
@@ -207,9 +211,13 @@ impl<'a> Engine<'a> {
 
         let place_started = Instant::now();
         let mut unplaced = 0;
+        let mut rendered: std::collections::HashMap<usize, Vec<u16>> = std::collections::HashMap::new();
         for observation in &mut observations {
             let frame = &self.memory.frames[observation.frame];
-            observation.placed = frame.depth_mm().and_then(|depth| place_box(&depth, &frame.camera, observation.bbox, &frame.pose));
+            observation.placed = self.memory.map.as_ref().and_then(|map| {
+                let depth = rendered.entry(observation.frame).or_insert_with(|| render_depth(map, crate::lidar::VOXEL_M, &frame.camera, &frame.pose, MIN_RANGE_M, MAX_RANGE_M));
+                place_box(depth, &frame.camera, observation.bbox, &frame.pose)
+            });
             if observation.placed.is_none() {
                 unplaced += 1;
             }
@@ -379,7 +387,7 @@ fn evidence_weight(observation: &Observation) -> f32 {
 
 fn summarize(text: &str, places: &[Place], observations: &[Observation], world: &str) -> String {
     if places.is_empty() {
-        return format!("No \"{text}\" was found in 3D ({} sightings, none with depth behind them).", observations.len());
+        return format!("No \"{text}\" was found in 3D ({} sightings, none with the lidar map behind them).", observations.len());
     }
     let list: Vec<String> = places
         .iter()
