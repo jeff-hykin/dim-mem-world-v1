@@ -153,7 +153,7 @@ impl Recording {
                     Err(_) => Ok(true), // one bad row doesn't end a recording
                 })
             }
-            Backend::Mcap(file) => file.for_each(stream, |ts, encoding, kind, payload| match decode(encoding, Kind::of(kind), payload) {
+            Backend::Mcap(file) => file.for_each_indexed(stream, |ts, encoding, kind, payload| match decode(encoding, Kind::of(kind), payload) {
                 Ok(Some(message)) => each(ts, message, None),
                 _ => Ok(true),
             }),

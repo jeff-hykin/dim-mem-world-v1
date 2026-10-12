@@ -167,7 +167,7 @@ impl McapFile {
     /// The newest message on `topic`.
     pub fn latest(&self, topic: &str) -> Result<Option<(f64, Vec<u8>)>> {
         let mut found = None;
-        self.for_each(topic, |ts, _, _, payload| {
+        self.for_each_indexed(topic, |ts, _, _, payload| {
             if found.as_ref().is_none_or(|(at, _): &(f64, Vec<u8>)| ts >= *at) {
                 found = Some((ts, payload.to_vec()));
             }
