@@ -1,0 +1,184 @@
+title: Memory World
+spec-version: v1.0 # the dimos.yaml spec version this file follows
+uses:
+    # Desktop's shared recordings folder: the page lists it to pick a recording
+    "@desktop-gateway":
+        - GET /recordings
+# Desktop's nix builds of this app pull from this cache (CI fills it)
+caches:
+    - url: https://dimos-desktop.cachix.org
+      key: "dimos-desktop.cachix.org-1:A4P35aGJGmCan92LWyamtSFXMqaVE+VRFYnrJ8QMTeQ="
+provides:
+    private:
+        - api/cloud
+    description: >-
+        Memory World: a robot recording's visual memory (three SigLIP2 models per image patch, stored INSIDE the
+        recording) and questions about it answered as places in 3D, with photo evidence. No API key: everything runs on
+        local models. Coordinates are meters in the recording's world frame (worldFrame: odom/map/world), +z up.
+        Workflow: GET api/status (open recording, its memory, models, a running generation). If no recording is open,
+        GET api/recordings then POST api/open {path}. If memory.state isn't "ready", POST api/generate (downloads the
+        models first if needed; poll GET api/generate). Then ask: GET api/count?text=traffic cone (how many distinct
+        places), GET api/dimensions?text=... (each place's size and height), or POST api/query {text} for everything
+        (places, every sighting with its box, timings). Show the user the evidence: GET
+        api/places/{id}/evidence?text=... is a boxed photo. Use short noun phrases as text ("traffic cone", "fire
+        extinguisher"); a place is one physical thing seen from one or more keyframes.
+    endpoints:
+        -
+            description: >-
+                Everything at a glance: the open recording, its compatibility check (what's missing, if anything), its
+                memory (state none / partial / ready, keyframes), the models (downloaded? progress), the running or last
+                generation, and whether the memory is loaded for questions.
+            method: GET
+            path: api/status
+            role: context
+        -
+            description: >-
+                The recordings in Desktop's recordings folder, each with its size, format and memory state (none /
+                partial / ready).
+            method: GET
+            path: api/recordings
+        -
+            description: >-
+                Whether a recording (id = its file name in the recordings folder) can be used: color images, depth
+                images, both cameras' intrinsics and a tf pose; `missing` names each thing it lacks. Also its memory
+                state.
+            method: GET
+            params:
+                id:
+                    required: true
+                    type: string
+            path: 'api/recordings/{id}/check'
+        -
+            description: >-
+                Open a recording (every open page switches to it): path = absolute path (Desktop's GET /recordings lists
+                them) or a file name in the recordings folder. Checks it and loads its memory if it has one.
+            method: POST
+            params:
+                path:
+                    description: the recording file (.db / .mcap)
+                    required: true
+                    type: string
+            path: api/open
+        -
+            description: >-
+                The model files (downloaded at run time, about 5.6 GB in all): per file bytes done and state, overall
+                progress, speed and ETA.
+            method: GET
+            path: api/models
+        -
+            description: >-
+                Download the models that are missing (resumes partial files, checks each sha256). Runs in the
+                background: poll GET api/models.
+            method: POST
+            path: api/models/download
+        -
+            description: >-
+                Build the open recording's memory IN PLACE (new streams inside the recording): one keyframe per
+                everySeconds, each embedded by three SigLIP2 models per patch, with its pose, depth and a JPEG.
+                Downloads missing models first. Runs in the background (poll GET api/generate); a stopped generation
+                resumes where it left off.
+            method: POST
+            params:
+                everySeconds:
+                    description: one keyframe per this many seconds (default 1.0)
+                    type: number
+            path: api/generate
+        -
+            description: >-
+                The running (or last) generation's progress: phase (models, planning, depth, embedding, done, cancelled,
+                failed), keyframes done / total, frames per second, ETA, bytes written into the recording.
+            method: GET
+            path: api/generate
+        -
+            description: Stop the running generation after the keyframe in hand (what's done stays; POST api/generate resumes).
+            method: POST
+            path: api/generate/cancel
+        -
+            description: >-
+                Forget the open recording's memory (drops its tables from a .db; marks an .mcap's memory cleared). The
+                recording's own data is untouched.
+            method: DELETE
+            path: api/memory
+        -
+            description: >-
+                Ask where something is: the keyframes where all three models agree go to OWLv2 for boxes, each box's
+                depth is lifted into 3D, and sightings of one thing merge into a place. Returns count, places (center,
+                size, heightM, sightings, best sighting), every sighting with its box and 3D extent, the candidate
+                frames, timings and a one-line summary. The page shows the answer.
+            method: POST
+            params:
+                agreementOnly:
+                    description: skip OWLv2; boxes are where the three models agree (default false)
+                    type: boolean
+                frames:
+                    description: at most this many keyframes go to OWLv2 (default 24)
+                    type: integer
+                owlThreshold:
+                    description: OWLv2 box score cutoff (default 0.2)
+                    type: number
+                placeRadiusM:
+                    description: sightings closer than this are one place (default 0.75)
+                    type: number
+                text:
+                    description: 'what to look for, a short noun phrase'
+                    required: true
+                    type: string
+            path: api/query
+        -
+            description: >-
+                How many distinct things matching text were seen: the number of places, with each place's center, height
+                and how many keyframes saw it.
+            method: GET
+            params:
+                text:
+                    description: 'what to look for, a short noun phrase (e.g. "traffic cone")'
+                    required: true
+                    type: string
+            path: api/count
+        -
+            description: >-
+                How big each thing matching text is: per place its 3D center, size (x, y, z extents in meters), height
+                (top minus bottom, meters) and bottom/top z.
+            method: GET
+            params:
+                text:
+                    description: 'what to look for, a short noun phrase (e.g. "traffic cone")'
+                    required: true
+                    type: string
+            path: api/dimensions
+        -
+            description: 'The last answer (what the page is showing), or null.'
+            method: GET
+            path: api/answer
+            role: view
+        -
+            description: >-
+                A photo of a place: the keyframe of its best sighting as JPEG, the thing boxed. text = the question the
+                place came from (asked again if it isn't the last answer).
+            method: GET
+            params:
+                id:
+                    description: place id from the answer
+                    required: true
+                    type: integer
+                text:
+                    description: the question
+                    required: true
+                    type: string
+            path: 'api/places/{id}/evidence'
+        -
+            description: 'The memory''s keyframes: index, time, camera position and rotation (world frame) — the camera''s path.'
+            method: GET
+            path: api/frames
+        -
+            description: 'A keyframe''s stored image (JPEG), with box=x0,y0,x1,y1 (pixels) outlined when given.'
+            method: GET
+            params:
+                box:
+                    description: 'x0,y0,x1,y1 in pixels'
+                    type: string
+                index:
+                    description: keyframe index
+                    required: true
+                    type: integer
+            path: 'api/frames/{index}/image'

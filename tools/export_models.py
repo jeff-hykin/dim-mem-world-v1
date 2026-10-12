@@ -192,38 +192,55 @@ PROBES = ["a traffic cone", "a fire extinguisher", "a chair", "a person walking"
 
 
 def quantize_text(key, out):
-    """Text towers are mostly their 256k-token embedding table. The table is stored fp16 (a Gather then a Cast back to
-    fp32) and every MatMul weight int8 per output channel, ~3x smaller; the probes below must keep cosine >= 0.995
-    with the fp32 tower (int8 on the table too measured 0.990, too close)."""
+    """Text towers are mostly their 256k-token embedding table. Every big weight is stored fp16: the table is gathered
+    in fp16 and its rows cast to fp32 (so RAM holds it at half size); every other big weight is cast to fp32 once at
+    load. Weight-only, so the arithmetic is fp32 and the result doesn't depend on which kernels an ONNX Runtime build
+    fuses (dynamic int8 measured cosine 0.998 fused but 0.88-0.95 unfused, which is what some builds run).
+    The probes below must keep cosine >= 0.999 with the fp32 tower."""
     import onnx
     from onnx import TensorProto, helper, numpy_helper
-    from onnxruntime.quantization import QuantType, quantize_dynamic
 
     source = out / f"{key}.text.onnx"
-    halved = out / f"{key}.text.f16table.onnx"
     target = out / f"{key}.text.small.onnx"
     model = onnx.load(str(source))
-    initializers = {init.name: init for init in model.graph.initializer}
-    for index, node in enumerate(list(model.graph.node)):
+    graph = model.graph
+    initializers = {init.name: init for init in graph.initializer}
+    tables = set()
+    for node in list(graph.node):
         table = initializers.get(node.input[0]) if node.op_type == "Gather" else None
         if table is None or table.dims[0] < 100_000:
             continue
-        values = numpy_helper.to_array(table).astype(np.float16)
-        table.CopyFrom(numpy_helper.from_array(values, table.name))
+        tables.add(table.name)
         original = node.output[0]
         node.output[0] = original + "_f16"
-        cast = helper.make_node("Cast", [node.output[0]], [original], to=TensorProto.FLOAT)
-        model.graph.node.insert(list(model.graph.node).index(node) + 1, cast)
-    onnx.save_model(model, str(halved), save_as_external_data=True, all_tensors_to_one_file=True, location=halved.name + ".data")
-    quantize_dynamic(str(halved), str(target), weight_type=QuantType.QInt8, op_types_to_quantize=["MatMul"], per_channel=True)
+        graph.node.insert(list(graph.node).index(node) + 1, helper.make_node("Cast", [node.output[0]], [original], to=TensorProto.FLOAT))
+    casts = []
+    for init in graph.initializer:
+        if init.data_type != TensorProto.FLOAT or int(np.prod(init.dims)) < 65_536:
+            continue
+        values = numpy_helper.to_array(init).astype(np.float16)
+        if init.name in tables:
+            init.CopyFrom(numpy_helper.from_array(values, init.name))
+            continue
+        name = init.name
+        init.CopyFrom(numpy_helper.from_array(values, name + "_f16"))
+        casts.append(helper.make_node("Cast", [name + "_f16"], [name], to=TensorProto.FLOAT))
+    for cast in reversed(casts):
+        graph.node.insert(0, cast)
+    onnx.save_model(model, str(target))
     processor = AutoProcessor.from_pretrained(MEMBERS[key])
     ids = processor(text=PROBES, return_tensors="np", padding="max_length", max_length=TEXT_LENGTH)["input_ids"]
     full = ort.InferenceSession(str(source)).run(None, {"input_ids": ids})[0]
-    small = ort.InferenceSession(str(target)).run(None, {"input_ids": ids})[0]
-    cosine = (full * small).sum(-1) / np.linalg.norm(full, axis=-1) / np.linalg.norm(small, axis=-1)
-    print(key, "small text cosine", cosine.round(4).tolist(), "bytes", target.stat().st_size)
-    assert cosine.min() >= 0.995, f"{key}: small text tower drifted ({cosine})"
-    return cosine.min()
+    worst = 1.0
+    for level in [ort.GraphOptimizationLevel.ORT_DISABLE_ALL, ort.GraphOptimizationLevel.ORT_ENABLE_ALL]:
+        options = ort.SessionOptions()
+        options.graph_optimization_level = level
+        small = ort.InferenceSession(str(target), options).run(None, {"input_ids": ids})[0]
+        cosine = (full * small).sum(-1) / np.linalg.norm(full, axis=-1) / np.linalg.norm(small, axis=-1)
+        worst = min(worst, float(cosine.min()))
+    print(key, "small text worst cosine (both optimization levels)", round(worst, 6), "bytes", target.stat().st_size)
+    assert worst >= 0.999, f"{key}: small text tower drifted ({worst})"
+    return worst
 
 
 def main():
@@ -238,5 +255,46 @@ def main():
         quantize_text(key, out)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and "--fixture" not in sys.argv:
     main()
+
+
+def fixture(image_path, out_path):
+    """The test fixture the Rust tests compare against: per member, the full embeddings of a few patches, the grid
+    mean and the text "a traffic cone", computed the way hype does (transformers' processor + full vision tower)."""
+    image = Image.open(image_path).convert("RGB")
+    result = {"image": {"width": image.width, "height": image.height}}
+    for key, repo in MEMBERS.items():
+        model = AutoModel.from_pretrained(repo).eval()
+        processor = AutoProcessor.from_pretrained(repo)
+        vision = model.vision_model
+        with torch.inference_mode():
+            if "naflex" in repo:
+                inputs = processor(images=[image], return_tensors="pt", max_num_patches=1024)
+                rows, cols = (int(v) for v in inputs["spatial_shapes"][0])
+                hidden = vision(
+                    pixel_values=inputs["pixel_values"],
+                    attention_mask=inputs["pixel_attention_mask"],
+                    spatial_shapes=inputs["spatial_shapes"],
+                ).last_hidden_state[0, : rows * cols]
+            else:
+                inputs = processor(images=[image], return_tensors="pt")
+                hidden = vision(pixel_values=inputs["pixel_values"]).last_hidden_state[0]
+                rows = cols = int(round(hidden.shape[0] ** 0.5))
+            grid = F.normalize(vision.head(hidden.reshape(rows * cols, 1, -1)).reshape(rows * cols, -1), dim=-1)
+            tokens = processor(text=["a traffic cone"], return_tensors="pt", padding="max_length", max_length=TEXT_LENGTH)
+            text = F.normalize(model.text_model(input_ids=tokens["input_ids"]).pooler_output, dim=-1)[0]
+        picks = [0, rows * cols // 3, rows * cols // 2, rows * cols - 1]
+        result[key] = {
+            "rows": rows,
+            "cols": cols,
+            "patches": {str(i): grid[i].tolist() for i in picks},
+            "mean": grid.mean(0).tolist(),
+            "text_ids": tokens["input_ids"][0].tolist(),
+            "text": text.tolist(),
+        }
+    Path(out_path).write_text(json.dumps(result))
+
+
+if __name__ == "__main__" and "--fixture" in sys.argv:
+    fixture(sys.argv[2], sys.argv[3])

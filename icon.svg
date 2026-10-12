@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- a cube in space with a search lens: where things are, in 3D -->
+  <path d="M3.5 8 10 4.5 16.5 8v7.5L10 19l-6.5-3.5z"/>
+  <path d="M3.5 8 10 11.5 16.5 8M10 11.5V19"/>
+  <circle cx="17" cy="16.5" r="3.2"/>
+  <path d="m19.4 18.9 2.1 2.1"/>
+</svg>

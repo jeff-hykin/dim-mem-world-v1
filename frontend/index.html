@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <!-- dim-app first-paint (dim-app vendor.js keeps this block current): Desktop's theme (/theme.css, every skin's tokens)
+             and its saved skin and corners before any CSS or JS loads, so the app's first frame is already in Desktop's look;
+             off Desktop, the bundled Portal page color. -->
+        <style>
+            html {
+                background: var(--bg, #05070d);
+                color-scheme: dark;
+            }
+        </style>
+        <script>
+            if (location.pathname.startsWith("/apps/")) {
+                try {
+                    const root = document.documentElement
+                    root.dataset.skin = localStorage.getItem("portal.theme") || "portal"
+                    const corners = localStorage.getItem("portal.corners")
+                    if (corners === "sharp" || corners === "rounded") {
+                        root.dataset.corners = corners
+                    }
+                } catch {
+                    // storage unavailable: Portal
+                }
+                document.write('<link rel="stylesheet" href="/theme.css" data-dim-desktop-theme>')
+            }
+        </script>
+        <!-- /dim-app first-paint -->
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <meta name="color-scheme" content="light dark" />
+        <link rel="icon" href="./icon.svg" />
+        <title>Memory World</title>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module" src="./src/main.tsx"></script>
+    </body>
+</html>

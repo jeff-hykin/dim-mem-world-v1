@@ -1,0 +1,23 @@
+[package]
+name = "memworld"
+version = "0.1.0"
+edition = "2021"
+description = "Memory World's core: per-patch visual memory of a robot recording (three SigLIP2 models + OWLv2), stored inside the recording, and questions answered as 3D places"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+dimos-recording = { path = "../dimos-recording" }
+half = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+nalgebra = "0.33"
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "std"] }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokenizers = { version = "0.21", default-features = false, features = ["fancy-regex"] }
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3"
+mcap = { version = "0.25", default-features = false, features = ["lz4", "zstd"] }

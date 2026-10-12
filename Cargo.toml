@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/dimos-recording", "crates/memworld", "server"]
+
+[profile.release]
+opt-level = 3
+debug = false
+
+# tests and dev builds run the math on real-sized frames
+[profile.dev.package."*"]
+opt-level = 3
+[profile.dev.package.memworld]
+opt-level = 2
