@@ -345,7 +345,8 @@ pub fn merge(observations: &mut [Observation], radius: f64) -> Vec<Place> {
         .map(|(id, list)| {
             let placed: Vec<&Placed> = list.iter().map(|&i| observations[i].placed.as_ref().unwrap()).collect();
             let axis = |f: &dyn Fn(&Placed) -> f64| median(placed.iter().map(|p| f(p)).collect());
-            let best = list[0];
+            // the evidence photo: a confident sighting that shows the thing large (score x the box's diagonal)
+            let best = *list.iter().max_by(|&&a, &&b| evidence_weight(&observations[a]).total_cmp(&evidence_weight(&observations[b]))).unwrap();
             Place {
                 id,
                 center: [axis(&|p| p.center[0]), axis(&|p| p.center[1]), axis(&|p| p.center[2])],
@@ -353,7 +354,7 @@ pub fn merge(observations: &mut [Observation], radius: f64) -> Vec<Place> {
                 height_m: axis(&|p| p.size[2]),
                 bottom_z: axis(&|p| p.min[2]),
                 top_z: axis(&|p| p.max[2]),
-                score: observations[best].score,
+                score: list.iter().map(|&i| observations[i].score).fold(0.0, f32::max),
                 first_seen: list.iter().map(|&i| observations[i].ts).fold(f64::MAX, f64::min),
                 last_seen: list.iter().map(|&i| observations[i].ts).fold(f64::MIN, f64::max),
                 best,
@@ -369,6 +370,11 @@ pub fn merge(observations: &mut [Observation], radius: f64) -> Vec<Place> {
         }
     }
     places
+}
+
+fn evidence_weight(observation: &Observation) -> f32 {
+    let [x0, y0, x1, y1] = observation.bbox;
+    observation.score * (1.0 + ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt())
 }
 
 fn summarize(text: &str, places: &[Place], observations: &[Observation], world: &str) -> String {
@@ -456,6 +462,8 @@ mod tests {
         assert_eq!(places[0].observations, vec![0, 1, 3]);
         assert!((places[0].height_m - 0.7).abs() < 1e-9);
         assert_eq!(observations[2].place, Some(1));
+        // equal boxes: the best-scoring sighting is the evidence
+        assert_eq!(places[0].best, 0);
         assert_eq!(observations[4].place, None);
     }
 }

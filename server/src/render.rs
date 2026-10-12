@@ -18,8 +18,8 @@ pub fn cloud(memory: &Memory) -> Result<Vec<u8>> {
         for v in (0..camera.height).step_by(3) {
             for u in (0..camera.width).step_by(3) {
                 let mm = depth[(v * camera.width + u) as usize];
-                // past 5 m the RealSense's depth is too noisy to draw
-                if mm == 0 || mm > 5000 {
+                // past 4 m the RealSense's depth is too noisy to draw
+                if mm == 0 || mm > 4000 {
                     continue;
                 }
                 let p = frame.pose * camera.unproject(u as f64 + 0.5, v as f64 + 0.5, mm as f64 / 1000.0);
