@@ -41,8 +41,9 @@ provides:
             path: api/recordings
         -
             description: >-
-                Whether a recording (id = its file name in the recordings folder) can be used: color images, depth
-                images, both cameras' intrinsics and a tf pose; `missing` names each thing it lacks. Also its memory
+                Whether a recording (id = its file name in the recordings folder) can be used: color images, the
+                camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a raw lidar + IMU that
+                lite_record's post_process gives poses to first); `missing` names each thing it lacks. Also its memory
                 state.
             method: GET
             params:
@@ -75,9 +76,10 @@ provides:
             path: api/models/download
         -
             description: >-
-                Build the open recording's memory IN PLACE (new streams inside the recording): one keyframe per
-                everySeconds, each embedded by three SigLIP2 models per patch, with its pose, depth and a JPEG.
-                Downloads missing models first. Runs in the background (poll GET api/generate); a stopped generation
+                Build the open recording's memory IN PLACE (new streams inside the recording): the lidar's voxel map,
+                and one keyframe per everySeconds, each embedded by three SigLIP2 models per patch plus OWLv2's image
+                half, with its pose and a JPEG. Runs lite_record's post_process first on a raw lidar + IMU recording;
+                downloads missing models first. Runs in the background (poll GET api/generate); a stopped generation
                 resumes where it left off.
             method: POST
             params:
@@ -104,10 +106,11 @@ provides:
             path: api/memory
         -
             description: >-
-                Ask where something is: the keyframes where all three models agree go to OWLv2 for boxes, each box's
-                depth is lifted into 3D, and sightings of one thing merge into a place. Returns count, places (center,
-                size, heightM, sightings, best sighting), every sighting with its box and 3D extent, the candidate
-                frames, timings and a one-line summary. The page shows the answer.
+                Ask where something is: the keyframes where all three models agree go to OWLv2 for boxes, each box is
+                placed in 3D from the lidar map drawn into that keyframe's camera, and sightings of one thing merge into
+                a place (along their lines of sight). Returns count, places (center, size, heightM, sightings, best
+                sighting), every sighting with its box and 3D extent, the candidate frames, timings and a one-line
+                summary. The page shows the answer.
             method: POST
             params:
                 agreementOnly:

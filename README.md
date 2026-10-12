@@ -10,22 +10,23 @@ dimos-desktop install https://github.com/jeff-hykin/dim-mem-world-v1
 
 ## How it works
 
-1. **Pick a recording** from Desktop's recordings folder (`.db` or `.mcap`). It needs color images, depth images, both
-   cameras' intrinsics (CameraInfo) and a tf path from `map` / `world` / `odom` to the color camera; the check names
-   whatever is missing.
+1. **Pick a recording** from Desktop's recordings folder (`.db` or `.mcap`). It needs color images, the camera's
+   intrinsics (CameraInfo), a lidar, and poses: tf from `map` / `world` / `odom` to the camera and the lidar. A raw
+   lidar + IMU recording (lite_record's) gets its poses from lite_record's `post_process` first, run in place (lite_record
+   is part of the nix build). The check names whatever is missing.
 2. **Models** are downloaded the first time (about 5.7 GB, each file's sha256 checked, partial downloads resumed): three
    SigLIP2 models and OWLv2 (split into its image and text halves), all from this repo's
    [`models-v1` release](https://github.com/jeff-hykin/dim-mem-world-v1/releases/tag/models-v1). They run on ONNX
    Runtime from nixpkgs.
 3. **Generate** writes the memory **into the recording itself** (new tables in a `.db`, new channels appended in place
-   to an `.mcap`; nothing beside it): one keyframe per second, each with its camera pose, its depth drawn into the color
-   camera, a JPEG, and **three per-patch embedding grids**: SigLIP2 base-patch16-224, base-patch16-NaFlex and
+   to an `.mcap`; nothing beside it): the lidar's 5 cm voxel map, and one keyframe per second, each with its camera pose,
+   a JPEG, and **three per-patch embedding grids**: SigLIP2 base-patch16-224, base-patch16-NaFlex and
    so400m-patch16-NaFlex (1024-patch budget), every vision token pooled alone by the model's attention head so each patch
    lands in the text-aligned space; plus OWLv2's image half (a box and class embedding per patch). A stopped generation
    resumes where it left off.
 4. **Ask**: a question's heat per patch (its score minus the best of a few background prompts) must be positive in
    **all three** models at once; the keyframes with agreed heat are scored by OWLv2 (its stored image half against the
-   question's text embedding: a dot product per patch, milliseconds per frame) and its boxes must cover agreed cells; each box's depth is
+   question's text embedding: a dot product per patch, milliseconds per frame) and its boxes must cover agreed cells; each box is placed with the lidar map drawn into that keyframe's camera (nearest surface wins), and is
    lifted into the world with the keyframe's pose; sightings within 0.75 m merge into one place. "How many" is the number
    of places; "how tall" is each place's height.
 
@@ -37,7 +38,7 @@ chat can answer "how many traffic cones were seen, and how tall are they?" by ca
 - `server/`: the `dimos-app-server` binary (axum): endpoints, model downloads, background jobs. Also a CLI:
   `dimos-app-server --check <rec>`, `--generate <rec>`, `--ask <rec> "traffic cone"`.
 - `crates/memworld/`: the core: models (`siglip`, `owl`), `compat`, `generate`, `store` (in-place writes), `memory`,
-  `query`, `camera` (depth registration, placing a box in 3D).
+  `query`, `camera` (drawing the lidar map into a camera, placing a box in 3D), `lidar` (the voxel map), `lite_record`.
 - `crates/dimos-recording/`: reading and appending to dimos recordings without dimos (vendored from the Map Editor, plus
   image and CameraInfo decoding).
 - `frontend/`: the page (React + Vite + dimos-react).

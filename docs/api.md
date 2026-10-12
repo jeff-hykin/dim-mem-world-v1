@@ -23,12 +23,13 @@ type Check = {
     path: string
     format: "db" | "mcap"
     compatible: boolean
-    missing: string[] // one sentence per missing input: color images, depth images, intrinsics, a camera pose
+    missing: string[] // one sentence per missing input: color images, intrinsics, a lidar, poses
     color?: ImageStream
-    depth?: ImageStream
     colorInfo?: string
-    depthInfo?: string
+    lidar?: string // the lidar the map is built from
+    lidarFrame?: string
     worldFrame?: string
+    postProcess?: string // set when Generate runs lite_record's post_process first (why)
     start: number
     end: number
     durationS: number
@@ -143,4 +144,4 @@ type Observation = {
 ```
 
 `api/cloud` is little-endian: `u32 count`, then `count` × `f32 x, y, z`, then `count` × `u8 r, g, b`. It is the memory's
-keyframes' depth, colored by their images, thinned to a 5 cm grid: the scene to draw answers in.
+lidar's 5 cm voxel map, cut 2.2 m above the floor and colored by height: the scene to draw answers in.

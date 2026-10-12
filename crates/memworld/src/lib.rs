@@ -1,6 +1,6 @@
 //! Memory World: a robot recording's visual memory, stored inside the recording, and questions about it answered as
 //! places in 3D. `compat` checks a recording, `generate` embeds its frames (three SigLIP2 members, per patch), `memory`
-//! loads that back, `query` answers a text question (agreement of all three, OWLv2 boxes, depth back-projection).
+//! loads that back, `query` answers a text question (agreement of all three, OWLv2 boxes, placed in 3D with the lidar map).
 pub mod blob;
 pub mod camera;
 pub mod compat;
