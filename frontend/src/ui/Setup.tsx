@@ -135,14 +135,14 @@ export function Setup({ status, onStatus, onPickAnother }: { status: AppStatus; 
             {check ? <CheckCard check={check} onPickAnother={onPickAnother} /> : <Alert tone="info">Checking the recording…</Alert>}
 
             {check?.compatible && !models.ready && !generating && (
-                <Card padded title={`Download the models (~${(models.totalBytes / 1e9 || 4.9).toFixed(1)} GB)`} description={`Three SigLIP2 models that turn images and words into the same space. Downloaded once, into ${models.dir}.`} data-step="models">
+                <Card padded title={`Download the models (~${(models.totalBytes / 1e9 || 5.7).toFixed(1)} GB)`} description={`Three SigLIP2 models that put image patches and words in one space, and OWLv2 for boxes. Downloaded once (every file checksum-verified) into ${models.dir}.`} data-step="models">
                     <Column gap={12}>
                         {(models.downloading || models.doneBytes > 0) && <ModelsProgress models={models} />}
                         {models.error && <Alert tone="danger" title="The download stopped">{models.error}</Alert>}
                         {!models.downloading && (
                             <Row>
                                 <Button variant="primary" icon="download" loading={busy} onClick={() => act(api.downloadModels)} data-action="download-models">
-                                    {models.error ? "Try the download again" : models.doneBytes > 0 ? "Resume the download" : `Download models (~${(models.totalBytes / 1e9 || 4.9).toFixed(1)} GB)`}
+                                    {models.error ? "Try the download again" : models.doneBytes > 0 ? "Resume the download" : `Download models (~${(models.totalBytes / 1e9 || 5.7).toFixed(1)} GB)`}
                                 </Button>
                                 <Text small muted>or press Generate below: it downloads them first.</Text>
                             </Row>

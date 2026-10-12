@@ -342,7 +342,9 @@ mod tests {
         let (status, body) = call(&router, "GET", "/api/status", None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["recording"], Value::Null);
-        assert_eq!(body["models"]["ready"], false);
+        // every model file is listed with its size (whether they're downloaded depends on MEMWORLD_MODELS)
+        assert_eq!(body["models"]["files"].as_array().unwrap().len(), memworld::models::files().len());
+        assert_eq!(body["models"]["totalBytes"], memworld::models::total_bytes());
         let (status, body) = call(&router, "POST", "/api/query", Some(json!({ "text": "a cone" }))).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert!(body["error"].as_str().unwrap().contains("POST api/open"));
