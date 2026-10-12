@@ -38,6 +38,8 @@ pub struct Loaded {
 pub struct Open {
     pub path: String,
     pub name: String,
+    /// when it was opened (ms since the epoch): a page opened before it switches to it
+    pub opened_ms: u64,
 }
 
 pub struct App {
@@ -121,7 +123,8 @@ impl App {
             Ok((check, memory::status(&recording)?))
         })
         .await??;
-        *self.open.write().unwrap() = Some(Open { path: path.display().to_string(), name });
+        let opened_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        *self.open.write().unwrap() = Some(Open { path: path.display().to_string(), name, opened_ms });
         *self.check.write().unwrap() = Some(check);
         let has_memory = status.state != "none";
         *self.status.write().unwrap() = Some(status);

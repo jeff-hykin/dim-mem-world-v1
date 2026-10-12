@@ -12,12 +12,21 @@ import { Ask } from "./ui/Ask.tsx"
 const FAST_MS = 500
 const SLOW_MS = 3000
 
+/** whether this page load is a refresh (vs. the app being opened) */
+function isReload(): boolean {
+    const navigation = performance.getEntriesByType?.("navigation")[0] as PerformanceNavigationTiming | undefined
+    return navigation?.type === "reload"
+}
+
 const busy = (status: AppStatus | null) => !!status && (status.models.downloading || isGenerating(status) || status.loading)
 
 export function App() {
     const [status, setStatus] = useState<AppStatus | null>(null)
     const [unreachable, setUnreachable] = useState<string | null>(null)
-    const [picking, setPicking] = useState(false)
+    // a fresh open of the app starts at the picker; a refresh keeps the open recording. A recording opened after this
+    // page loaded (by the agent, or another window) is shown.
+    const [picking, setPicking] = useState(() => !isReload())
+    const loadedAt = useRef(Date.now())
     const [forgetting, setForgetting] = useState(false)
     const confirm = useConfirm()
     const statusRef = useRef<AppStatus | null>(null)
@@ -85,6 +94,11 @@ export function App() {
     }
 
     const recording = status?.recording ?? null
+    useEffect(() => {
+        if (picking && recording && recording.openedMs > loadedAt.current) {
+            setPicking(false)
+        }
+    }, [picking, recording])
     const memory = status?.memory ?? null
     const ready = memory?.state === "ready"
     const showPicker = !!status && (!recording || picking)

@@ -37,7 +37,7 @@ type Check = {
 type ImageStream = { name: string; encoding: string; width: number; height: number; frameId: string; count: number }
 type Status = { state: "none" | "partial" | "ready"; generation?: number; frames: number; planned: number; options: object; createdMs?: number }
 type AppStatus = {
-    recording: { path: string; name: string } | null
+    recording: { path: string; name: string; openedMs: number } | null // openedMs: when it was opened
     check: Check | null
     memory: Status | null
     models: Models

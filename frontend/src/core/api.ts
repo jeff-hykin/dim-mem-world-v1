@@ -87,7 +87,8 @@ export interface Progress {
 }
 
 export interface AppStatus {
-    recording: { path: string; name: string } | null
+    /** the open recording; openedMs = when it was opened (server clock, ms) */
+    recording: { path: string; name: string; openedMs: number } | null
     check: Check | null
     memory: MemoryStatus | null
     models: Models
