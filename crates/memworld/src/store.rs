@@ -24,6 +24,8 @@ pub enum Stream {
     Patches(usize),
     /// one per keyframe: OWLv2's image half (fp16 class embeddings, logit shift/scale, boxes per patch)
     Owl,
+    /// one per generation: the lidar's voxel map in the world frame (f32 x, y, z), when the recording has a lidar
+    Map,
 }
 
 pub const PREFIX: &str = "memworld";
@@ -32,7 +34,7 @@ pub const MESSAGE_ENCODING: &str = "memworld.mwb1";
 
 impl Stream {
     pub fn all() -> Vec<Stream> {
-        let mut all = vec![Stream::Meta, Stream::Frames, Stream::Depth, Stream::Owl];
+        let mut all = vec![Stream::Meta, Stream::Frames, Stream::Depth, Stream::Owl, Stream::Map];
         all.extend((0..crate::siglip::MEMBERS.len()).map(Stream::Patches));
         all
     }
@@ -44,6 +46,7 @@ impl Stream {
             Stream::Depth => "depth".into(),
             Stream::Patches(i) => format!("patches_{}", crate::siglip::MEMBERS[*i]),
             Stream::Owl => "owl".into(),
+            Stream::Map => "map".into(),
         }
     }
 

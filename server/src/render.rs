@@ -1,5 +1,6 @@
-//! What the page draws from a memory: its point cloud (every keyframe's depth, colored by its JPEG, thinned to a
-//! 5 cm grid) and keyframe images with an answer's box drawn on them.
+//! What the page draws from a memory: its point cloud (the lidar's voxel map when the recording has a lidar, else every
+//! keyframe's depth thinned to a 5 cm grid), colored by height like the Map Editor, and keyframe images with an
+//! answer's box drawn on them.
 use anyhow::Result;
 use memworld::memory::Memory;
 use memworld::owl::decode_jpeg;
@@ -10,41 +11,46 @@ const MAX_POINTS: usize = 1_500_000;
 
 /// `u32 count`, `count` x `f32 x, y, z`, `count` x `u8 r, g, b`, little endian.
 pub fn cloud(memory: &Memory) -> Result<Vec<u8>> {
-    let mut cells: HashMap<(i32, i32, i32), ([f32; 3], [u8; 3])> = HashMap::new();
+    let points = match &memory.map {
+        Some(map) => map.clone(),
+        None => depth_points(memory),
+    };
+    let colors = memworld::lidar::height_colors(&points);
+    let mut out = Vec::with_capacity(4 + points.len() * 15);
+    out.extend_from_slice(&(points.len() as u32).to_le_bytes());
+    for p in &points {
+        for value in p {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+    for color in &colors {
+        out.extend_from_slice(color);
+    }
+    Ok(out)
+}
+
+/// Without a lidar: every keyframe's depth (to 4 m; RealSense is noisy past that) in the world, one point per 5 cm cell.
+fn depth_points(memory: &Memory) -> Vec<[f32; 3]> {
+    let mut cells: HashMap<(i32, i32, i32), [f32; 3]> = HashMap::new();
     for frame in &memory.frames {
         let Some(depth) = frame.depth_mm() else { continue };
-        let Ok(rgb) = decode_jpeg(&frame.jpeg) else { continue };
         let camera = &frame.camera;
         for v in (0..camera.height).step_by(3) {
             for u in (0..camera.width).step_by(3) {
                 let mm = depth[(v * camera.width + u) as usize];
-                // past 4 m the RealSense's depth is too noisy to draw
                 if mm == 0 || mm > 4000 {
                     continue;
                 }
                 let p = frame.pose * camera.unproject(u as f64 + 0.5, v as f64 + 0.5, mm as f64 / 1000.0);
                 let key = ((p.x / VOXEL_M).floor() as i32, (p.y / VOXEL_M).floor() as i32, (p.z / VOXEL_M).floor() as i32);
-                let at = ((v * rgb.width + u) * 3) as usize;
-                cells.entry(key).or_insert(([p.x as f32, p.y as f32, p.z as f32], [rgb.data[at], rgb.data[at + 1], rgb.data[at + 2]]));
+                cells.entry(key).or_insert([p.x as f32, p.y as f32, p.z as f32]);
             }
         }
         if cells.len() > MAX_POINTS {
             break;
         }
     }
-    let count = cells.len();
-    let mut out = Vec::with_capacity(4 + count * 15);
-    out.extend_from_slice(&(count as u32).to_le_bytes());
-    let points: Vec<_> = cells.into_values().collect();
-    for (p, _) in &points {
-        for value in p {
-            out.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-    for (_, color) in &points {
-        out.extend_from_slice(color);
-    }
-    Ok(out)
+    cells.into_values().collect()
 }
 
 /// A stored keyframe as JPEG, with `bbox` (pixels) outlined when given.

@@ -87,6 +87,8 @@ pub struct Memory {
     pub meta: Value,
     pub frames: Vec<Frame>,
     pub members: Vec<MemberIndex>,
+    /// the lidar's voxel map in the world frame, when the recording has a lidar
+    pub map: Option<Vec<[f32; 3]>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,7 +196,14 @@ pub fn load(recording: &Recording) -> Result<Option<Memory>> {
         }
         members.push(index);
     }
-    Ok(Some(Memory { generation, meta, frames, members }))
+    let mut map = None;
+    for (_, bytes) in store::read(recording, Stream::Map)? {
+        let (header, body) = blob::decode(&bytes)?;
+        if mine(&header) {
+            map = Some(crate::lidar::decode(body));
+        }
+    }
+    Ok(Some(Memory { generation, meta, frames, members, map }))
 }
 
 #[cfg(test)]

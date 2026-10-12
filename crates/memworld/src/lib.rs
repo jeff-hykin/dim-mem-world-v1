@@ -5,6 +5,7 @@ pub mod blob;
 pub mod camera;
 pub mod compat;
 pub mod generate;
+pub mod lidar;
 pub mod memory;
 pub mod models;
 pub mod onnx;

@@ -35,6 +35,8 @@ pub struct Check {
     pub color_info: Option<String>,
     pub depth_info: Option<String>,
     pub world_frame: Option<String>,
+    /// a lidar (PointCloud2) stream: the scene answers are drawn in (optional)
+    pub lidar: Option<String>,
     pub start: f64,
     pub end: f64,
     pub duration_s: f64,
@@ -51,6 +53,7 @@ pub struct Setup {
     pub world_frame: String,
     pub color_from_depth: Iso,
     pub tf: TfTree,
+    pub lidar: Option<String>,
 }
 
 fn first_message(recording: &Recording, stream: &str) -> Option<(String, String, Vec<u8>)> {
@@ -189,6 +192,10 @@ pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
         }
         _ => None,
     };
+    let lidar = streams.iter().filter(|s| s.kind == Kind::Cloud && !store::is_ours(&s.name) && s.count > 0).max_by_key(|s| (s.name.to_ascii_lowercase().contains("lidar"), s.count)).map(|s| s.name.clone());
+    if lidar.is_none() {
+        notes.push("no lidar: the 3D scene is drawn from the keyframes' depth".into());
+    }
     let compatible = missing.is_empty();
     let setup = match (compatible, &color, &depth, &color_info, &depth_info, &world_frame, color_from_depth) {
         (true, Some(c), Some(d), Some((_, ci)), Some((_, di)), Some(world), Some(extrinsic)) => Some(Setup {
@@ -199,6 +206,7 @@ pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
             world_frame: world.clone(),
             color_from_depth: extrinsic,
             tf,
+            lidar: lidar.clone(),
         }),
         _ => None,
     };
@@ -212,6 +220,7 @@ pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
         color_info: color_info.map(|c| c.0),
         depth_info: depth_info.map(|d| d.0),
         world_frame,
+        lidar,
         start,
         end,
         duration_s: end - start,

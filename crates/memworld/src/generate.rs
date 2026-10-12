@@ -172,6 +172,25 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
     // at their start, and then read only the data section, which appends never touch)
     let recording = Recording::open(path)?;
 
+    // the lidar's voxel map (the scene answers are drawn in), once per generation
+    if let Some(lidar) = setup.lidar.as_deref() {
+        let has_map = store::read(&recording, Stream::Map)?.iter().any(|(_, b)| blob::decode(b).map(|(h, _)| h["generation"].as_u64() == Some(generation)).unwrap_or(false));
+        if !has_map {
+            progress.phase = "map".into();
+            progress.message = format!("building the 3D map from {lidar}");
+            report(&progress);
+            let points = crate::lidar::build(&recording, lidar, &setup.tf, &setup.world_frame, &mut |done, total| {
+                progress.message = format!("building the 3D map from {lidar}: {done} of {total} scans");
+                report(&progress);
+            }, cancel)?;
+            let first = planned.first().copied().unwrap_or(0.0);
+            let header = json!({ "generation": generation, "source": lidar, "voxel": crate::lidar::VOXEL_M, "count": points.len(), "frame": setup.world_frame });
+            writer.put(Stream::Map, first, blob::encode(&header, &crate::lidar::encode(&points)));
+            writer.flush()?;
+        }
+    }
+    let recording = Recording::open(path)?;
+
     // depth first: each keyframe's nearest depth image, drawn into the color camera at the JPEG's size
     progress.phase = "depth".into();
     progress.message = format!("matching depth to {} keyframes", todo.len());
