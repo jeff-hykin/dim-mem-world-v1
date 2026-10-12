@@ -5,9 +5,11 @@
         nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
         rust-overlay.url = "github:oxalica/rust-overlay";
         rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+        # lite_record's post_process: poses for a raw lidar + IMU recording (run in place, as the Map Editor does)
+        lite_record.url = "github:jeff-hykin/lite_record/461c194e5d804ba6012c58442b65b87494113e1b";
     };
 
-    outputs = { self, nixpkgs, rust-overlay }:
+    outputs = { self, nixpkgs, rust-overlay, lite_record }:
         let
             systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
             forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; overlays = [ (import rust-overlay) ]; }));
@@ -53,7 +55,8 @@
                         mkdir -p $out/bin
                         makeWrapper ${server}/bin/dimos-app-server $out/bin/dimos-app-server \
                             --set-default MEMWORLD_FRONTEND ${frontend} \
-                            --set-default ORT_DYLIB_PATH ${onnxLibrary pkgs}
+                            --set-default ORT_DYLIB_PATH ${onnxLibrary pkgs} \
+                            --set-default LITE_RECORD_BIN ${lite_record.packages.${pkgs.system}.default}/bin/lite_record
                         cp ${./icon.svg} $out/icon.svg
                     '';
                     default = self.packages.${pkgs.system}.dimosApp;
