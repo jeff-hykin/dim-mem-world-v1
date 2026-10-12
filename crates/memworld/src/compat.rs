@@ -184,7 +184,12 @@ pub fn check(recording: &Recording) -> Result<(Check, Option<Setup>)> {
         if tf.is_empty() {
             missing.push("poses: the recording has no tf (and no lidar + IMU for lite_record to estimate them from)".into());
         } else if world_frame.is_none() {
-            missing.push(format!("poses: no tf path from map, world or odom to both the camera ({}) and the lidar ({lf})", c.frame_id));
+            let to_lidar = WORLD_FRAMES.iter().find(|w| tf.lookup(w, lf, middle, 0.5).is_some());
+            missing.push(match to_lidar {
+                // the lidar is placed but the camera hangs off a separate tree: the rig's camera <-> lidar mount isn't recorded
+                Some(world) => format!("where the camera sits on the robot: the lidar ({lf}) has poses in {world}, but no tf joins the camera ({}) to it (the camera-lidar mount isn't in this recording's tf)", c.frame_id),
+                None => format!("poses: no tf path from map, world or odom to the camera ({}) or the lidar ({lf})", c.frame_id),
+            });
         }
     }
     let compatible = missing.is_empty();
