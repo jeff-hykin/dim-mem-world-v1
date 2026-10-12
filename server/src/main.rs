@@ -2,7 +2,7 @@
 //! and every action as an HTTP endpoint (api.rs), listed in agent.json for Desktop's agent. One compiled binary; the
 //! models are downloaded at run time and run on ONNX Runtime (no Python, no API key).
 //!
-//! The same binary answers from a terminal: `--check <rec>`, `--generate <rec>`, `--ask <rec> <text>`.
+//! The same binary answers from a terminal: `--check <rec>`, `--generate <rec>`, `--ask <rec> <text>`, `--forget <rec>`.
 mod api;
 mod app;
 mod dimos_app;
@@ -36,6 +36,9 @@ pub struct Args {
     /// with --generate: one keyframe per this many seconds
     #[arg(long, default_value_t = 1.0)]
     every: f64,
+    /// forget a recording's memory (drop its tables / clear its mcap memory), then exit
+    #[arg(long, value_name = "RECORDING")]
+    forget: Option<PathBuf>,
     /// ask a recording's memory (`--ask <recording> <text>`), print the answer as JSON, then exit
     #[arg(long, num_args = 2, value_names = ["RECORDING", "TEXT"])]
     ask: Option<Vec<String>>,
@@ -65,6 +68,11 @@ async fn main() -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
+    if let Some(path) = args.forget {
+        memworld::generate::clear(&path)?;
+        eprintln!("forgot the memory of {}", path.display());
+        return Ok(());
+    }
     if let Some(path) = args.generate {
         if !state.downloads.ready() {
             eprintln!("downloading the models into {}", state.downloads.dir.display());
@@ -75,7 +83,7 @@ async fn main() -> Result<()> {
         let cancel = AtomicBool::new(false);
         let progress = tokio::task::spawn_blocking(move || {
             let report = |p: &memworld::generate::Progress| eprintln!("{:>10} {:>5}/{:<5} eta {:>6.0}s  {}", p.phase, p.done, p.total, p.eta_s.unwrap_or(0.0), p.message);
-            memworld::generate::generate(&path, &runtime.members, &options, &report, &cancel)
+            memworld::generate::generate(&path, &runtime.members, &runtime.owl, &options, &report, &cancel)
         })
         .await??;
         println!("{}", serde_json::to_string_pretty(&progress)?);

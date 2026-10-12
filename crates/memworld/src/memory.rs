@@ -22,6 +22,8 @@ pub struct Frame {
     pub jpeg: Vec<u8>,
     /// zstd of u16 LE millimeters at the camera's size; empty when the keyframe had no depth
     pub depth: Vec<u8>,
+    /// OWLv2's image half for this keyframe (fp16, owl::Features::decode); empty for a memory made without it
+    pub owl: Vec<u8>,
 }
 
 impl Frame {
@@ -143,6 +145,13 @@ pub fn load(recording: &Recording) -> Result<Option<Memory>> {
             depth.insert(key(ts), body.to_vec());
         }
     }
+    let mut owl: HashMap<u64, Vec<u8>> = HashMap::new();
+    for (ts, bytes) in store::read(recording, Stream::Owl)? {
+        let (header, body) = blob::decode(&bytes)?;
+        if mine(&header) {
+            owl.insert(key(ts), body.to_vec());
+        }
+    }
     let mut grids_by_member: Vec<HashMap<u64, (u16, u16, usize, Vec<f32>)>> = Vec::new();
     for i in 0..MEMBERS.len() {
         let mut grids = HashMap::new();
@@ -166,7 +175,7 @@ pub fn load(recording: &Recording) -> Result<Option<Memory>> {
         }
         let camera: Pinhole = serde_json::from_value(header["camera"].clone())?;
         let pose = pose_of(&header).context("frame without a pose")?;
-        frames.push(Frame { ts, pose, camera, jpeg: body.to_vec(), depth: depth.remove(&key(ts)).unwrap_or_default() });
+        frames.push(Frame { ts, pose, camera, jpeg: body.to_vec(), depth: depth.remove(&key(ts)).unwrap_or_default(), owl: owl.remove(&key(ts)).unwrap_or_default() });
     }
     frames.sort_by(|a, b| a.ts.total_cmp(&b.ts));
     let mut members = Vec::new();

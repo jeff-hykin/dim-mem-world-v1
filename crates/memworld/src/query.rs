@@ -34,7 +34,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { frames: 24, owl_threshold: 0.2, place_radius_m: 0.75, agreement_only: false }
+        Options { frames: 200, owl_threshold: 0.2, place_radius_m: 0.75, agreement_only: false }
     }
 }
 
@@ -164,6 +164,10 @@ impl<'a> Engine<'a> {
         timings.search_ms = ms(search_started);
 
         let owl_started = Instant::now();
+        let owl_query = match (self.owl, options.agreement_only) {
+            (Some(owl), false) => Some(owl.embed_text(text)?),
+            _ => None,
+        };
         let mut observations = Vec::new();
         for candidate in &candidates {
             let frame = &self.memory.frames[candidate.frame];
@@ -181,10 +185,11 @@ impl<'a> Engine<'a> {
                     .map(|[r, c]| cell_heat[*r as usize * candidate.grid[1] as usize + *c as usize])
                     .sum()
             };
-            match (self.owl, options.agreement_only) {
-                (Some(owl), false) => {
-                    let rgb = owl::decode_jpeg(&frame.jpeg)?;
-                    for detection in owl.detect(&rgb, text, options.owl_threshold)? {
+            match (self.owl, &owl_query) {
+                (Some(owl), Some(query)) => {
+                    // the stored image half when the memory has it, else run it now on the stored JPEG
+                    let features = if frame.owl.is_empty() { owl.features(&owl::decode_jpeg(&frame.jpeg)?)? } else { owl::Features::decode(&frame.owl)? };
+                    for detection in features.detect(query, frame.camera.width, frame.camera.height, options.owl_threshold) {
                         let agreement = agreement_in(&detection.bbox);
                         if agreement > 0.0 {
                             observations.push(Observation { frame: candidate.frame, ts: frame.ts, bbox: detection.bbox, source: "owl", score: detection.score, agreement, placed: None, place: None });

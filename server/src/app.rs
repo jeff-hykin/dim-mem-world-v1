@@ -19,7 +19,7 @@ use std::time::Instant;
 /// The models, loaded from the models folder (vision + text towers lazily inside each member).
 pub struct Runtime {
     pub members: Vec<Member>,
-    pub owl: Option<Owl>,
+    pub owl: Owl,
 }
 
 /// A memory in RAM, with what questions reuse.
@@ -41,7 +41,6 @@ pub struct Open {
 }
 
 pub struct App {
-    pub data_dir: PathBuf,
     pub recordings_dir: PathBuf,
     pub downloads: Arc<Downloads>,
     pub open: RwLock<Option<Open>>,
@@ -63,7 +62,6 @@ impl App {
         let models_dir = memworld::models::dir(&data_dir);
         Arc::new(App {
             downloads: Downloads::new(models_dir),
-            data_dir,
             recordings_dir,
             open: RwLock::new(None),
             check: RwLock::new(None),
@@ -178,7 +176,7 @@ impl App {
         let runtime = tokio::task::spawn_blocking(move || -> Result<Runtime> {
             let started = Instant::now();
             let members = MEMBERS.iter().map(|key| Member::load(&dir, key)).collect::<Result<Vec<_>>>()?;
-            let owl = Some(Owl::load(&dir)?);
+            let owl = Owl::load(&dir)?;
             eprintln!("memworld: models loaded in {:.1} s", started.elapsed().as_secs_f64());
             Ok(Runtime { members, owl })
         })
@@ -251,7 +249,7 @@ impl App {
         let cancel = self.cancel.clone();
         tokio::task::spawn_blocking(move || {
             let report = |progress: &Progress| *this.generation.lock().unwrap() = Some(progress.clone());
-            generate::generate(&path, &runtime.members, &options, &report, &cancel).map(|_| ())
+            generate::generate(&path, &runtime.members, &runtime.owl, &options, &report, &cancel).map(|_| ())
         })
         .await?
     }
@@ -291,7 +289,7 @@ impl App {
                 }
                 cached.clone().unwrap()
             };
-            let engine = query::Engine { memory: &loaded.memory, members: &runtime.members, owl: runtime.owl.as_ref(), background: &background };
+            let engine = query::Engine { memory: &loaded.memory, members: &runtime.members, owl: Some(&runtime.owl), background: &background };
             engine.ask(&text, &options)
         })
         .await??;

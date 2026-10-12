@@ -1,11 +1,11 @@
-//! The model files, downloaded at run time (never shipped with the app): the three SigLIP2 members from this repo's
-//! `models-v1` release (made by tools/export_models.py) and OWLv2 from onnx-community on Hugging Face, pinned to a
-//! commit. Each file's size and sha256 are fixed here, so a download is checked before it's used.
+//! The model files, downloaded at run time (never shipped with the app), all from this repo's `models-v1` release
+//! (made by tools/export_models.py from google/siglip2-* and google/owlv2-base-patch16-ensemble): the three SigLIP2
+//! members and OWLv2 split into its image and text halves. Each file's size and sha256 are fixed here, so a download is
+//! checked before it's used.
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 pub const RELEASE: &str = "https://github.com/jeff-hykin/dim-mem-world-v1/releases/download/models-v1";
-pub const OWL_REPO: &str = "https://huggingface.co/onnx-community/owlv2-base-patch16-ensemble-ONNX/resolve/180d6ef7599bd69bb48db5c72bd49ad03ddfab80";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +18,7 @@ pub struct ModelFile {
     pub sha256: &'static str,
 }
 
-const SIGLIP: [(&str, &str, u64, &str); 14] = [
+const FILES: [(&str, &str, u64, &str); 17] = [
     ("base224.json", "base224", 137, "6f86bc65c6e02ca8ec0f154ef7423b9839cdd59202b368e947aeefd43c59a1d0"),
     ("base224.text.onnx", "base224", 565164929, "46deb3780ef14d584bd04d632ee608a4f97d8478ac72850136b315a0ecca1136"),
     ("base224.tokenizer.json", "base224", 34363039, "cb9140fae3ac5122c972d37adf83e1248471a38147ad76f8215c8872c6fd8322"),
@@ -33,13 +33,13 @@ const SIGLIP: [(&str, &str, u64, &str); 14] = [
     ("so400m_naflex.text.onnx", "so400m_naflex", 1416880080, "38b97a14d0b4206d223f3539bd29356ef80441b7c86097cd5725b581892a140b"),
     ("so400m_naflex.tokenizer.json", "so400m_naflex", 34356304, "58a1696e79c9d97937389ed116f552a15c84811d7b8023918b86f4bc5775b1b0"),
     ("so400m_naflex.vision.onnx", "so400m_naflex", 1710791373, "4cded3f8921adb0dd9c2746b3d2c753613b4595174cf87c49e1f97ade8df155e"),
+    ("owlv2.vision.onnx", "owlv2", 360215906, "1dbfa2e70360b36e64ccb68915ed08287b3b8ada4b6b34417a33fd2879f5bc3b"),
+    ("owlv2.text.onnx", "owlv2", 253937349, "980e20df55f2b65d3b8cd9f97f0f704fb589cf680b63a4f54111cdf07e656dc2"),
+    ("owlv2.tokenizer.json", "owlv2", 3642370, "fbf857dd4099afc6da394d17cba2f22c5d01eb6d87bb74967c90634f3bcf4e82"),
 ];
 
 pub fn files() -> Vec<ModelFile> {
-    let mut files: Vec<ModelFile> = SIGLIP.iter().map(|&(name, model, bytes, sha256)| ModelFile { name, model, url: format!("{RELEASE}/{name}"), bytes, sha256 }).collect();
-    files.push(ModelFile { name: "owlv2.onnx", model: "owlv2", url: format!("{OWL_REPO}/onnx/model.onnx"), bytes: 614219112, sha256: "ca3ea10811d55cd8763058c6eaddec514bbb91cc07ab774a0db0775346aef732" });
-    files.push(ModelFile { name: "owlv2.tokenizer.json", model: "owlv2", url: format!("{OWL_REPO}/tokenizer.json"), bytes: 3642208, sha256: "e277946093d72c7748281a6a344d6c79a5226c48954d6797dc36984aea23ac60" });
-    files
+    FILES.iter().map(|&(name, model, bytes, sha256)| ModelFile { name, model, url: format!("{RELEASE}/{name}"), bytes, sha256 }).collect()
 }
 
 /// Where the models live: `$MEMWORLD_MODELS`, else `<app data>/models`.
@@ -71,9 +71,11 @@ mod tests {
                 assert!(files().iter().any(|f| f.name == format!("{member}.{part}")), "{member}.{part}");
             }
         }
-        assert!(files().iter().all(|f| f.sha256.len() == 64 && f.bytes > 0));
-        assert!(OWL_REPO.contains("/resolve/") && !OWL_REPO.ends_with("/main"));
-        // about 5.6 GB in all: the progress bar's denominator
+        for part in ["vision.onnx", "text.onnx", "tokenizer.json"] {
+            assert!(files().iter().any(|f| f.name == format!("owlv2.{part}")), "owlv2.{part}");
+        }
+        assert!(files().iter().all(|f| f.sha256.len() == 64 && f.bytes > 0 && f.url.starts_with(RELEASE)));
+        // about 5.7 GB in all: the progress bar's denominator
         assert!((5_000_000_000..6_000_000_000).contains(&total_bytes()));
     }
 }

@@ -1,10 +1,17 @@
-//! OWLv2 (onnx-community/owlv2-base-patch16-ensemble-ONNX): boxes for a text query in one frame. It runs only on the
-//! few frames the three SigLIP2 members agree on, and its boxes are what get placed in 3D.
+//! OWLv2 (google/owlv2-base-patch16-ensemble), split in two (tools/export_models.py):
+//!
+//! - the image half, run ONCE per keyframe at generation and stored in the recording: for each of its 60x60 patches a
+//!   box, a normalized class embedding (512), and a logit shift and scale;
+//! - the text half, run per question: one normalized embedding.
+//!
+//! A box's score for a question is then `sigmoid((class . text + shift) * scale)`: a dot product per patch, so a
+//! question can score every keyframe in milliseconds instead of re-running the image tower (4 s a frame on a CPU).
 //!
 //! Preprocessing as Owlv2ImageProcessor: pad the frame to a square at the bottom/right with gray, resize to 960,
-//! CLIP mean/std. Boxes come back as (cx, cy, w, h) in [0, 1] of the padded square.
+//! CLIP mean/std. Boxes are (cx, cy, w, h) in [0, 1] of the padded square.
+use crate::blob;
 use crate::onnx;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use dimos_recording::image::Rgb;
 use ort::session::Session;
 use ort::value::Tensor;
@@ -12,6 +19,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 pub const SIZE: u32 = 960;
+pub const PATCHES: usize = 3600;
+pub const DIM: usize = 512;
 pub const TEXT_LENGTH: usize = 16;
 const MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
 const STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
@@ -23,19 +32,92 @@ pub struct Detection {
     pub score: f32,
 }
 
+/// One frame's question-independent OWLv2 output.
+#[derive(Debug, Clone)]
+pub struct Features {
+    /// PATCHES x DIM, each row unit length
+    pub class_embeds: Vec<f32>,
+    pub shift: Vec<f32>,
+    pub scale: Vec<f32>,
+    /// PATCHES x (cx, cy, w, h) in [0, 1] of the padded square
+    pub boxes: Vec<f32>,
+}
+
+impl Features {
+    /// fp16, as stored in the recording: class embeds, shift, scale, boxes.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut all = Vec::with_capacity(PATCHES * (DIM + 6));
+        all.extend_from_slice(&self.class_embeds);
+        all.extend_from_slice(&self.shift);
+        all.extend_from_slice(&self.scale);
+        all.extend_from_slice(&self.boxes);
+        blob::f16_bytes(&all)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Features> {
+        let all = blob::f16_values(bytes);
+        if all.len() != PATCHES * (DIM + 6) {
+            bail!("OWLv2 features of the wrong size ({} values)", all.len());
+        }
+        let (class_embeds, rest) = all.split_at(PATCHES * DIM);
+        let (shift, rest) = rest.split_at(PATCHES);
+        let (scale, boxes) = rest.split_at(PATCHES);
+        Ok(Features { class_embeds: class_embeds.to_vec(), shift: shift.to_vec(), scale: scale.to_vec(), boxes: boxes.to_vec() })
+    }
+
+    /// Every box scoring at least `threshold` for the question embedding, in pixels of a `width` x `height` frame
+    /// (the frame the features came from, at any scale), best first, overlaps suppressed.
+    pub fn detect(&self, query: &[f32], width: u32, height: u32, threshold: f32) -> Vec<Detection> {
+        let side = width.max(height) as f32;
+        let mut found: Vec<Detection> = (0..PATCHES)
+            .filter_map(|i| {
+                let similarity = crate::memory::dot(&self.class_embeds[i * DIM..(i + 1) * DIM], query);
+                let logit = (similarity + self.shift[i]) * self.scale[i];
+                let score = 1.0 / (1.0 + (-logit).exp());
+                if score < threshold {
+                    return None;
+                }
+                let b = &self.boxes[i * 4..i * 4 + 4];
+                let (cx, cy, w, h) = (b[0] * side, b[1] * side, b[2] * side, b[3] * side);
+                let bbox = [(cx - w / 2.0).max(0.0), (cy - h / 2.0).max(0.0), (cx + w / 2.0).min(width as f32), (cy + h / 2.0).min(height as f32)];
+                (bbox[2] > bbox[0] && bbox[3] > bbox[1]).then_some(Detection { bbox, score })
+            })
+            .collect();
+        found.sort_by(|a, b| b.score.total_cmp(&a.score));
+        suppress(found, 0.3)
+    }
+}
+
 pub struct Owl {
-    session: Mutex<Session>,
+    vision: Mutex<Session>,
+    text: Mutex<Option<Session>>,
+    text_path: std::path::PathBuf,
     tokenizer: tokenizers::Tokenizer,
 }
 
 impl Owl {
     pub fn load(dir: &Path) -> Result<Owl> {
-        let session = onnx::session(&dir.join("owlv2.onnx"))?;
+        let vision = onnx::session(&dir.join("owlv2.vision.onnx"))?;
         let tokenizer = tokenizers::Tokenizer::from_file(dir.join("owlv2.tokenizer.json")).map_err(|e| anyhow::anyhow!("owlv2 tokenizer: {e}"))?;
-        Ok(Owl { session: Mutex::new(session), tokenizer })
+        Ok(Owl { vision: Mutex::new(vision), text: Mutex::new(None), text_path: dir.join("owlv2.text.onnx"), tokenizer })
     }
 
-    fn tokens(&self, text: &str) -> Result<(Vec<i64>, Vec<i64>)> {
+    /// The image half for one frame.
+    pub fn features(&self, rgb: &Rgb) -> Result<Features> {
+        let pixels = preprocess(rgb);
+        let mut session = self.vision.lock().unwrap();
+        let out = session.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], pixels))?])?;
+        let take = |name: &str, len: usize| -> Result<Vec<f32>> {
+            let (_, data) = out[name].try_extract_tensor::<f32>()?;
+            if data.len() != len {
+                bail!("OWLv2 {name}: {} values, expected {len}", data.len());
+            }
+            Ok(data.to_vec())
+        };
+        Ok(Features { class_embeds: take("class_embeds", PATCHES * DIM)?, shift: take("logit_shift", PATCHES)?, scale: take("logit_scale", PATCHES)?, boxes: take("boxes", PATCHES * 4)? })
+    }
+
+    pub fn tokens(&self, text: &str) -> Result<(Vec<i64>, Vec<i64>)> {
         let encoding = self.tokenizer.encode(text, true).map_err(|e| anyhow::anyhow!("tokenizing: {e}"))?;
         let mut ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).take(TEXT_LENGTH).collect();
         let mut mask = vec![1i64; ids.len()];
@@ -44,35 +126,26 @@ impl Owl {
         Ok((ids, mask))
     }
 
-    /// Every box scoring at least `threshold` for `text`, best first.
-    pub fn detect(&self, rgb: &Rgb, text: &str, threshold: f32) -> Result<Vec<Detection>> {
+    /// The text half: a unit-length embedding of the question.
+    pub fn embed_text(&self, text: &str) -> Result<Vec<f32>> {
         let (ids, mask) = self.tokens(text)?;
-        let pixels = preprocess(rgb);
-        let mut session = self.session.lock().unwrap();
-        let outputs = session.run(ort::inputs![
+        let mut guard = self.text.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(onnx::session(&self.text_path)?);
+        }
+        let session = guard.as_mut().unwrap();
+        let out = session.run(ort::inputs![
             "input_ids" => Tensor::from_array(([1usize, TEXT_LENGTH], ids))?,
-            "pixel_values" => Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], pixels))?,
             "attention_mask" => Tensor::from_array(([1usize, TEXT_LENGTH], mask))?,
         ])?;
-        let (_, logits) = outputs["logits"].try_extract_tensor::<f32>()?;
-        let (_, boxes) = outputs["pred_boxes"].try_extract_tensor::<f32>()?;
-        let side = rgb.width.max(rgb.height) as f32;
-        let mut found: Vec<Detection> = logits
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &logit)| {
-                let score = 1.0 / (1.0 + (-logit).exp());
-                if score < threshold {
-                    return None;
-                }
-                let b = &boxes[i * 4..i * 4 + 4];
-                let (cx, cy, w, h) = (b[0] * side, b[1] * side, b[2] * side, b[3] * side);
-                let bbox = [(cx - w / 2.0).max(0.0), (cy - h / 2.0).max(0.0), (cx + w / 2.0).min(rgb.width as f32), (cy + h / 2.0).min(rgb.height as f32)];
-                (bbox[2] > bbox[0] && bbox[3] > bbox[1]).then_some(Detection { bbox, score })
-            })
-            .collect();
-        found.sort_by(|a, b| b.score.total_cmp(&a.score));
-        Ok(suppress(found, 0.3))
+        let (_, data) = out["embedding"].try_extract_tensor::<f32>()?;
+        Ok(data.to_vec())
+    }
+
+    /// Both halves on one frame (what a frame without stored features costs).
+    pub fn detect(&self, rgb: &Rgb, text: &str, threshold: f32) -> Result<Vec<Detection>> {
+        let query = self.embed_text(text)?;
+        Ok(self.features(rgb)?.detect(&query, rgb.width, rgb.height, threshold))
     }
 }
 
@@ -116,11 +189,6 @@ pub fn suppress(sorted: Vec<Detection>, overlap: f32) -> Vec<Detection> {
     kept
 }
 
-/// Whether a directory holds what `Owl::load` reads.
-pub fn present(dir: &Path) -> bool {
-    dir.join("owlv2.onnx").exists() && dir.join("owlv2.tokenizer.json").exists()
-}
-
 pub fn decode_jpeg(bytes: &[u8]) -> Result<Rgb> {
     let decoded = image::load_from_memory(bytes).context("decoding a stored frame")?.to_rgb8();
     Ok(Rgb { width: decoded.width(), height: decoded.height(), data: decoded.into_raw() })
@@ -145,9 +213,33 @@ mod tests {
         let rgb = Rgb { width: 4, height: 2, data: vec![255; 4 * 2 * 3] };
         let pixels = preprocess(&rgb);
         let n = (SIZE * SIZE) as usize;
-        // top-left is the white frame, bottom-left is the gray pad
         assert!(pixels[0] > 1.5);
         let gray = (128.0 / 255.0 - MEAN[0]) / STD[0];
         assert!((pixels[n - SIZE as usize] - gray).abs() < 0.05);
+    }
+
+    #[test]
+    fn stored_features_score_like_the_head_and_scale_to_any_frame_size() {
+        // one patch matches the question (class embed = the question), the rest point elsewhere
+        let mut features = Features { class_embeds: vec![0.0; PATCHES * DIM], shift: vec![0.0; PATCHES], scale: vec![1.0; PATCHES], boxes: vec![0.5; PATCHES * 4] };
+        for i in 0..PATCHES {
+            features.class_embeds[i * DIM + 1] = 1.0;
+        }
+        features.class_embeds[7 * DIM + 1] = 0.0;
+        features.class_embeds[7 * DIM] = 1.0;
+        features.scale[7] = 10.0;
+        features.boxes[7 * 4..7 * 4 + 4].copy_from_slice(&[0.25, 0.25, 0.1, 0.1]);
+        let mut query = vec![0.0; DIM];
+        query[0] = 1.0;
+        let back = Features::decode(&features.encode()).unwrap();
+        // 848 x 480: the padded square's side is 848
+        let found = back.detect(&query, 848, 480, 0.9);
+        assert_eq!(found.len(), 1);
+        assert!((found[0].score - 1.0 / (1.0 + (-10.0f32).exp())).abs() < 1e-4);
+        let expected = [0.2 * 848.0, 0.2 * 848.0, 0.3 * 848.0, 0.3 * 848.0];
+        assert!(found[0].bbox.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1.0), "{:?}", found[0]);
+        // the same features on the half-size JPEG give half-size boxes
+        let half = back.detect(&query, 424, 240, 0.9);
+        assert!((half[0].bbox[0] - expected[0] / 2.0).abs() < 1.0);
     }
 }

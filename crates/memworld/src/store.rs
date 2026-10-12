@@ -22,6 +22,8 @@ pub enum Stream {
     Depth,
     /// one per keyframe per member: fp16 per-patch embeddings
     Patches(usize),
+    /// one per keyframe: OWLv2's image half (fp16 class embeddings, logit shift/scale, boxes per patch)
+    Owl,
 }
 
 pub const PREFIX: &str = "memworld";
@@ -30,7 +32,7 @@ pub const MESSAGE_ENCODING: &str = "memworld.mwb1";
 
 impl Stream {
     pub fn all() -> Vec<Stream> {
-        let mut all = vec![Stream::Meta, Stream::Frames, Stream::Depth];
+        let mut all = vec![Stream::Meta, Stream::Frames, Stream::Depth, Stream::Owl];
         all.extend((0..crate::siglip::MEMBERS.len()).map(Stream::Patches));
         all
     }
@@ -41,6 +43,7 @@ impl Stream {
             Stream::Frames => "frames".into(),
             Stream::Depth => "depth".into(),
             Stream::Patches(i) => format!("patches_{}", crate::siglip::MEMBERS[*i]),
+            Stream::Owl => "owl".into(),
         }
     }
 

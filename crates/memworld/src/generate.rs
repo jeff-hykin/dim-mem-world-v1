@@ -5,6 +5,7 @@
 use crate::blob;
 use crate::camera::{register_depth, Pinhole};
 use crate::compat::{self, Setup};
+use crate::owl::Owl;
 use crate::siglip::{Member, MEMBERS};
 use crate::store::{self, Stream, Writer};
 use crate::tf;
@@ -91,7 +92,7 @@ fn resumable(recording: &Recording, options: &Options, setup: &Setup) -> Result<
     let generation = meta["generation"].as_u64().context("meta without generation")?;
     let mut done = HashSet::new();
     let frames = store::read(recording, Stream::Frames)?;
-    // a frame counts only once all its patch grids are in (a batch is written whole, but be strict)
+    // a frame counts only once all its patch grids and its OWLv2 features are in (a batch is written whole, but be strict)
     let mut grids: HashMap<u64, usize> = HashMap::new();
     for i in 0..MEMBERS.len() {
         for (ts, bytes) in store::read(recording, Stream::Patches(i))? {
@@ -100,8 +101,13 @@ fn resumable(recording: &Recording, options: &Options, setup: &Setup) -> Result<
             }
         }
     }
+    for (ts, bytes) in store::read(recording, Stream::Owl)? {
+        if blob::decode(&bytes)?.0["generation"].as_u64() == Some(generation) {
+            *grids.entry(key(ts)).or_default() += 1;
+        }
+    }
     for (ts, bytes) in frames {
-        if blob::decode(&bytes)?.0["generation"].as_u64() == Some(generation) && grids.get(&key(ts)) == Some(&MEMBERS.len()) {
+        if blob::decode(&bytes)?.0["generation"].as_u64() == Some(generation) && grids.get(&key(ts)) == Some(&(MEMBERS.len() + 1)) {
             done.insert(key(ts));
         }
     }
@@ -120,7 +126,7 @@ fn jpeg(rgb: &Rgb) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-pub fn generate(path: &Path, members: &[Member], options: &Options, report: &dyn Fn(&Progress), cancel: &AtomicBool) -> Result<Progress> {
+pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, report: &dyn Fn(&Progress), cancel: &AtomicBool) -> Result<Progress> {
     let started = Instant::now();
     let mut progress = Progress { phase: "planning".into(), message: "reading the recording".into(), ..Default::default() };
     report(&progress);
@@ -197,7 +203,7 @@ pub fn generate(path: &Path, members: &[Member], options: &Options, report: &dyn
     )?;
 
     progress.phase = "embedding".into();
-    progress.message = format!("embedding {} keyframes with {} models", todo.len(), members.len());
+    progress.message = format!("embedding {} keyframes with {} models + OWLv2", todo.len(), members.len());
     report(&progress);
     let wanted: HashSet<u64> = todo.iter().map(|t| key(*t)).collect();
     let embed_started = Instant::now();
@@ -217,6 +223,7 @@ pub fn generate(path: &Path, members: &[Member], options: &Options, report: &dyn
                 };
                 let rgb = decode_image(encoding, kind, payload)?.to_rgb()?;
                 let grids = members.iter().map(|m| m.embed_grid(&rgb)).collect::<Result<Vec<_>>>()?;
+                let boxes = owl.features(&rgb)?;
                 let thumb = crate::siglip::resize_rgb(&rgb, thumb_camera.width, thumb_camera.height);
                 let (translation, rotation) = tf::parts(&pose);
                 let depth = depths.remove(&key(ts));
@@ -233,6 +240,7 @@ pub fn generate(path: &Path, members: &[Member], options: &Options, report: &dyn
                     let header = json!({ "generation": generation, "width": thumb_camera.width, "height": thumb_camera.height, "unit": "mm", "codec": "zstd-u16le" });
                     writer.put(Stream::Depth, ts, blob::encode(&header, &depth));
                 }
+                writer.put(Stream::Owl, ts, blob::encode(&json!({ "generation": generation, "patches": crate::owl::PATCHES, "dim": crate::owl::DIM, "dtype": "f16" }), &boxes.encode()));
                 for (i, grid) in grids.iter().enumerate() {
                     let header = json!({ "generation": generation, "rows": grid.rows, "cols": grid.cols, "dim": grid.dim, "dtype": "f16" });
                     writer.put(Stream::Patches(i), ts, blob::encode(&header, &blob::f16_bytes(&grid.data)));

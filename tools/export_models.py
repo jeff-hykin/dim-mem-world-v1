@@ -255,7 +255,7 @@ def main():
         quantize_text(key, out)
 
 
-if __name__ == "__main__" and "--fixture" not in sys.argv:
+if __name__ == "__main__" and "--fixture" not in sys.argv and "--owl" not in sys.argv:
     main()
 
 
@@ -298,3 +298,71 @@ def fixture(image_path, out_path):
 
 if __name__ == "__main__" and "--fixture" in sys.argv:
     fixture(sys.argv[2], sys.argv[3])
+
+
+OWL_REPO = "google/owlv2-base-patch16-ensemble"
+
+
+class OwlVision(nn.Module):
+    """The question-independent half of OWLv2, run once per keyframe at generation: per patch (60x60 = 3600) its box,
+    its normalized class embedding and its logit shift/scale. A question then only needs the text tower and a dot."""
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, pixel_values):
+        feature_map = self.model.image_embedder(pixel_values=pixel_values)[0]
+        batch, h, w, dim = feature_map.shape
+        image_feats = feature_map.reshape(batch, h * w, dim)
+        boxes = self.model.box_predictor(image_feats, feature_map)
+        head = self.model.class_head
+        class_embeds = head.dense0(image_feats)
+        class_embeds = class_embeds / (torch.linalg.norm(class_embeds, dim=-1, keepdim=True) + 1e-6)
+        shift = head.logit_shift(image_feats)[..., 0]
+        scale = (head.elu(head.logit_scale(image_feats)) + 1)[..., 0]
+        return class_embeds, shift, scale, boxes
+
+
+class OwlText(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids, attention_mask):
+        embeds = self.model.owlv2.get_text_features(input_ids=input_ids, attention_mask=attention_mask)
+        return embeds / (torch.linalg.norm(embeds, dim=-1, keepdim=True) + 1e-6)
+
+
+def export_owl(out, image_path):
+    from transformers import Owlv2ForObjectDetection, Owlv2Processor
+
+    model = Owlv2ForObjectDetection.from_pretrained(OWL_REPO).eval()
+    processor = Owlv2Processor.from_pretrained(OWL_REPO)
+    image = Image.open(image_path).convert("RGB")
+    inputs = processor(text=[["a traffic cone"]], images=image, return_tensors="pt")
+    with torch.inference_mode():
+        truth = model(**inputs)
+        vision, text = OwlVision(model).eval(), OwlText(model).eval()
+        class_embeds, shift, scale, boxes = vision(inputs["pixel_values"])
+        query = text(inputs["input_ids"], inputs["attention_mask"])
+        logits = (class_embeds[0] @ query[0] + shift[0]) * scale[0]
+        print("owl split logits vs full", max_abs(logits, truth.logits[0, :, 0]), "boxes", max_abs(boxes, truth.pred_boxes))
+        torch.onnx.export(vision, (inputs["pixel_values"],), str(out / "owlv2.vision.onnx"), input_names=["pixel_values"],
+                          output_names=["class_embeds", "logit_shift", "logit_scale", "boxes"], opset_version=OPSET)
+        torch.onnx.export(text, (inputs["input_ids"], inputs["attention_mask"]), str(out / "owlv2.text.onnx"),
+                          input_names=["input_ids", "attention_mask"], output_names=["embedding"],
+                          dynamic_axes={"input_ids": {0: "batch"}, "attention_mask": {0: "batch"}, "embedding": {0: "batch"}},
+                          opset_version=OPSET)
+    session = ort.InferenceSession(str(out / "owlv2.vision.onnx"))
+    got = session.run(None, {"pixel_values": inputs["pixel_values"].numpy()})
+    text_session = ort.InferenceSession(str(out / "owlv2.text.onnx"))
+    got_query = text_session.run(None, {"input_ids": inputs["input_ids"].numpy(), "attention_mask": inputs["attention_mask"].numpy()})[0]
+    onnx_logits = (got[0][0] @ got_query[0] + got[1][0]) * got[2][0]
+    print("owl onnx logits vs full", max_abs(onnx_logits, truth.logits[0, :, 0]), "best score", float(torch.sigmoid(truth.logits.max())))
+    print("owl input_ids", inputs["input_ids"][0].tolist(), "mask", inputs["attention_mask"][0].tolist())
+    processor.tokenizer.backend_tokenizer.save(str(out / "owlv2.tokenizer.json"))
+
+
+if __name__ == "__main__" and "--owl" in sys.argv:
+    export_owl(Path(sys.argv[2]), sys.argv[3])
