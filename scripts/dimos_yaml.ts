@@ -11,6 +11,8 @@ uses:
     # Desktop's shared recordings folder: the page lists it to pick a recording
     "@desktop-gateway":
         - GET /recordings
+    # the dim-app SDK's zenoh client: Desktop's "recordings changed" events refresh the picker
+    "@zenoh-gateway": ">=0.5 <0.6"
 # Desktop's nix builds of this app pull from this cache (CI fills it)
 caches:
     - url: https://dimos-desktop.cachix.org

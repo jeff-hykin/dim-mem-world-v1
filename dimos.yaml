@@ -4,6 +4,8 @@ uses:
     # Desktop's shared recordings folder: the page lists it to pick a recording
     "@desktop-gateway":
         - GET /recordings
+    # the dim-app SDK's zenoh client: Desktop's "recordings changed" events refresh the picker
+    "@zenoh-gateway": ">=0.5 <0.6"
 # Desktop's nix builds of this app pull from this cache (CI fills it)
 caches:
     - url: https://dimos-desktop.cachix.org
@@ -61,7 +63,7 @@ provides:
             path: api/open
         -
             description: >-
-                The model files (downloaded at run time, about 5.6 GB in all): per file bytes done and state, overall
+                The model files (downloaded at run time, about 5.7 GB in all): per file bytes done and state, overall
                 progress, speed and ETA.
             method: GET
             path: api/models
@@ -111,7 +113,7 @@ provides:
                     description: skip OWLv2; boxes are where the three models agree (default false)
                     type: boolean
                 frames:
-                    description: at most this many keyframes go to OWLv2 (default 24)
+                    description: at most this many keyframes (most agreed heat first) are scored by OWLv2 (default 200)
                     type: integer
                 owlThreshold:
                     description: OWLv2 box score cutoff (default 0.2)
