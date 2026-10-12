@@ -276,6 +276,18 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
         return Err(error);
     }
     progress.phase = if cancel.load(Ordering::Relaxed) { "cancelled" } else { "done" }.into();
+    if progress.phase == "done" {
+        // the generation's meta again, marked complete: keyframes with no pose were left out on purpose, not missed
+        let metas = store::read(&Recording::open(path)?, Stream::Meta)?;
+        if let Some((ts, bytes)) = metas.iter().rev().find(|(_, b)| blob::decode(b).map(|(h, _)| h["generation"].as_u64() == Some(generation)).unwrap_or(false)) {
+            let mut meta = blob::decode(bytes)?.0;
+            meta["complete"] = json!(true);
+            meta["keyframes"] = json!(progress.done);
+            meta["skipped"] = json!(progress.skipped);
+            writer.put(Stream::Meta, *ts, blob::encode(&meta, &[]));
+            writer.flush()?;
+        }
+    }
     progress.message = match progress.phase.as_str() {
         "done" => format!("{} keyframes in memory ({} without a camera pose left out)", progress.done, progress.skipped),
         _ => format!("stopped at {} of {}; Generate again to resume", progress.done, progress.total),

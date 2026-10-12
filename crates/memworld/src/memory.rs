@@ -110,7 +110,7 @@ pub fn status(recording: &Recording) -> Result<Status> {
     let frames = store::read(recording, Stream::Frames)?.iter().filter(|(_, b)| blob::decode(b).map(|(h, _)| h["generation"].as_u64() == generation).unwrap_or(false)).count();
     let planned = meta["planned"].as_u64().unwrap_or(0) as usize;
     Ok(Status {
-        state: if frames == 0 { "none" } else if frames < planned { "partial" } else { "ready" },
+        state: if frames == 0 { "none" } else if frames < planned && !meta["complete"].as_bool().unwrap_or(false) { "partial" } else { "ready" },
         generation,
         frames,
         planned,

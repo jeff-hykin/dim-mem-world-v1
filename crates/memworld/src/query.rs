@@ -69,6 +69,8 @@ pub struct Observation {
     pub placed: Option<Placed>,
     /// which place it joined
     pub place: Option<usize>,
+    /// where the camera was (world frame)
+    pub camera: [f64; 3],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -196,13 +198,13 @@ impl<'a> Engine<'a> {
                     for detection in features.detect(query, frame.camera.width, frame.camera.height, options.owl_threshold) {
                         let agreement = agreement_in(&detection.bbox);
                         if agreement > 0.0 {
-                            observations.push(Observation { frame: candidate.frame, ts: frame.ts, bbox: detection.bbox, source: "owl", score: detection.score, agreement, placed: None, place: None });
+                            observations.push(Observation { frame: candidate.frame, ts: frame.ts, bbox: detection.bbox, source: "owl", score: detection.score, agreement, placed: None, place: None, camera: frame.position() });
                         }
                     }
                 }
                 _ => {
                     for (bbox, agreement) in regions(candidate, width, height, &cell_heat) {
-                        observations.push(Observation { frame: candidate.frame, ts: frame.ts, bbox, source: "agreement", score: agreement, agreement, placed: None, place: None });
+                        observations.push(Observation { frame: candidate.frame, ts: frame.ts, bbox, source: "agreement", score: agreement, agreement, placed: None, place: None, camera: frame.position() });
                     }
                 }
             }
@@ -329,20 +331,32 @@ fn median(mut values: Vec<f64>) -> f64 {
     values[values.len() / 2]
 }
 
-/// Greedy, best sighting first: a placed sighting joins the place whose center is within `radius` horizontally (and
-/// 1 m vertically), else starts one. A place's center, size and height are medians over its sightings.
+/// A sighting's depth is the uncertain part (a small far box can catch the wall behind the thing or the floor in front
+/// of it); its direction is not. So sightings merge along their lines of sight: nearest sightings first (their depth is
+/// the most reliable), each joins the place that lies within `radius` of its ray (in front of the camera, between half
+/// and twice its own range) and 1 m of its height, else starts one. A place's center, size and height come from its
+/// closest sightings (those within 1.5x the nearest one's range).
 pub fn merge(observations: &mut [Observation], radius: f64) -> Vec<Place> {
     let mut order: Vec<usize> = (0..observations.len()).filter(|&i| observations[i].placed.is_some()).collect();
-    order.sort_by(|&a, &b| observations[b].score.total_cmp(&observations[a].score));
+    order.sort_by(|&a, &b| observations[a].placed.as_ref().unwrap().range.total_cmp(&observations[b].placed.as_ref().unwrap().range));
     let mut members: Vec<Vec<usize>> = Vec::new();
     let mut centers: Vec<[f64; 3]> = Vec::new();
     for i in order {
-        let c = observations[i].placed.as_ref().unwrap().center;
-        let found = centers.iter().position(|p| ((p[0] - c[0]).powi(2) + (p[1] - c[1]).powi(2)).sqrt() <= radius && (p[2] - c[2]).abs() <= 1.0);
-        match found {
+        let placed = observations[i].placed.as_ref().unwrap();
+        let (camera, center) = (observations[i].camera, placed.center);
+        let ray: [f64; 3] = std::array::from_fn(|k| center[k] - camera[k]);
+        let length = (ray[0] * ray[0] + ray[1] * ray[1] + ray[2] * ray[2]).sqrt().max(1e-6);
+        let direction: [f64; 3] = std::array::from_fn(|k| ray[k] / length);
+        let on_ray = |p: &[f64; 3]| -> bool {
+            let to: [f64; 3] = std::array::from_fn(|k| p[k] - camera[k]);
+            let along = to[0] * direction[0] + to[1] * direction[1] + to[2] * direction[2];
+            let lateral = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2] - along * along).max(0.0).sqrt();
+            along >= 0.5 * length && along <= 2.0 * length && lateral <= radius && (p[2] - center[2]).abs() <= 1.0
+        };
+        match centers.iter().position(on_ray) {
             Some(place) => members[place].push(i),
             None => {
-                centers.push(c);
+                centers.push(center);
                 members.push(vec![i]);
             }
         }
@@ -351,8 +365,9 @@ pub fn merge(observations: &mut [Observation], radius: f64) -> Vec<Place> {
         .into_iter()
         .enumerate()
         .map(|(id, list)| {
-            let placed: Vec<&Placed> = list.iter().map(|&i| observations[i].placed.as_ref().unwrap()).collect();
-            let axis = |f: &dyn Fn(&Placed) -> f64| median(placed.iter().map(|p| f(p)).collect());
+            let nearest = observations[list[0]].placed.as_ref().unwrap().range;
+            let close: Vec<&Placed> = list.iter().map(|&i| observations[i].placed.as_ref().unwrap()).filter(|p| p.range <= 1.5 * nearest + 0.25).collect();
+            let axis = |f: &dyn Fn(&Placed) -> f64| median(close.iter().map(|p| f(p)).collect());
             // the evidence photo: a confident sighting that shows the thing large (score x the box's diagonal)
             let best = *list.iter().max_by(|&&a, &&b| evidence_weight(&observations[a]).total_cmp(&evidence_weight(&observations[b]))).unwrap();
             Place {
@@ -370,7 +385,7 @@ pub fn merge(observations: &mut [Observation], radius: f64) -> Vec<Place> {
             }
         })
         .collect();
-    places.sort_by(|a, b| b.score.total_cmp(&a.score));
+    places.sort_by(|a, b| b.score.total_cmp(&a.score).then(b.observations.len().cmp(&a.observations.len())));
     for (id, place) in places.iter_mut().enumerate() {
         place.id = id;
         for &i in &place.observations {
@@ -456,9 +471,30 @@ mod tests {
         assert_eq!(found[1].0, [300.0, 0.0, 400.0, 100.0]);
     }
 
+    /// a sighting from a camera 2 m away along -x
     fn sighting(score: f32, center: [f64; 3], height: f64) -> Observation {
-        let placed = Placed { center, size: [0.3, 0.3, height], min: [0.0, 0.0, center[2] - height / 2.0], max: [0.0, 0.0, center[2] + height / 2.0], support: 100, range: 2.0 };
-        Observation { frame: 0, ts: score as f64, bbox: [0.0; 4], source: "owl", score, agreement: 1.0, placed: Some(placed), place: None }
+        seen_from(score, center, height, [center[0] - 2.0, center[1], center[2]])
+    }
+
+    fn seen_from(score: f32, center: [f64; 3], height: f64, camera: [f64; 3]) -> Observation {
+        let range = ((center[0] - camera[0]).powi(2) + (center[1] - camera[1]).powi(2) + (center[2] - camera[2]).powi(2)).sqrt();
+        let placed = Placed { center, size: [0.3, 0.3, height], min: [0.0, 0.0, center[2] - height / 2.0], max: [0.0, 0.0, center[2] + height / 2.0], support: 100, range };
+        Observation { frame: 0, ts: score as f64, bbox: [0.0; 4], source: "owl", score, agreement: 1.0, placed: Some(placed), place: None, camera }
+    }
+
+    #[test]
+    fn a_far_sighting_that_caught_the_wall_behind_joins_along_its_line_of_sight() {
+        // the cone at (0, 0); a close view gets it right, a far view from 4 m along -y places it 1.5 m too far (the wall)
+        let close = seen_from(0.8, [0.0, 0.0, 0.2], 0.45, [0.0, -1.0, 0.3]);
+        let far = seen_from(0.9, [0.0, 1.5, 0.2], 0.6, [0.0, -4.0, 0.3]);
+        // something else 1.5 m to the SIDE of the cone is a second place, not merged
+        let beside = seen_from(0.7, [1.5, 0.0, 0.2], 0.45, [1.5, -1.0, 0.3]);
+        let mut observations = vec![far, close, beside];
+        let places = merge(&mut observations, 0.75);
+        assert_eq!(places.len(), 2, "{places:?}");
+        let cone = places.iter().find(|p| p.observations.len() == 2).unwrap();
+        // its center and height come from the close view
+        assert!((cone.center[1] - 0.0).abs() < 1e-9 && (cone.height_m - 0.45).abs() < 1e-9, "{cone:?}");
     }
 
     #[test]
