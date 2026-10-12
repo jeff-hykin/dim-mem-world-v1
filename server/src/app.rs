@@ -41,6 +41,8 @@ pub struct Open {
 }
 
 pub struct App {
+    /// the app's own folder (Desktop's data dir): models, and which generation to resume after a restart
+    pub data_dir: PathBuf,
     pub recordings_dir: PathBuf,
     pub downloads: Arc<Downloads>,
     pub open: RwLock<Option<Open>>,
@@ -62,6 +64,7 @@ impl App {
         let models_dir = memworld::models::dir(&data_dir);
         Arc::new(App {
             downloads: Downloads::new(models_dir),
+            data_dir,
             recordings_dir,
             open: RwLock::new(None),
             check: RwLock::new(None),
@@ -196,6 +199,9 @@ impl App {
             bail!("a generation is already running (GET api/generate)");
         }
         self.cancel.store(false, Ordering::SeqCst);
+        // remembered until it ends, so a restart of this server (Desktop restarts app servers when it updates) picks it up again
+        let _ = std::fs::create_dir_all(&self.data_dir);
+        let _ = std::fs::write(self.resume_file(), json!({ "path": path, "options": options }).to_string());
         *self.generation.lock().unwrap() = Some(Progress { phase: "models".into(), message: "getting the models ready".into(), ..Default::default() });
         let this = self.clone();
         tokio::spawn(async move {
@@ -211,6 +217,7 @@ impl App {
             }
             let _ = this.refresh_status(&path);
             *this.loaded.write().unwrap() = None;
+            let _ = std::fs::remove_file(this.resume_file());
             this.generating.store(false, Ordering::SeqCst);
             this.load_memory(path);
         });
@@ -252,6 +259,27 @@ impl App {
             generate::generate(&path, &runtime.members, &runtime.owl, &options, &report, &cancel).map(|_| ())
         })
         .await?
+    }
+
+    fn resume_file(&self) -> PathBuf {
+        self.data_dir.join("generating.json")
+    }
+
+    /// At start: a generation this server was running when it stopped (a Desktop update, a crash) continues where its
+    /// last batch ended (generation resumes from what's in the recording).
+    pub async fn resume_interrupted(self: &Arc<Self>) {
+        let Ok(text) = std::fs::read_to_string(self.resume_file()) else { return };
+        let Ok(saved) = serde_json::from_str::<Value>(&text) else { return };
+        let (Some(path), Ok(options)) = (saved["path"].as_str(), serde_json::from_value::<generate::Options>(saved["options"].clone())) else { return };
+        eprintln!("memworld: resuming the generation of {path} (this server stopped while it ran)");
+        let result = match self.open(PathBuf::from(path)).await {
+            Ok(()) => self.start_generation(options),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = result {
+            eprintln!("memworld: couldn't resume: {error:#}");
+            let _ = std::fs::remove_file(self.resume_file());
+        }
     }
 
     /// The loaded memory of the open recording, waiting for a load in flight.

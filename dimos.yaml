@@ -87,8 +87,9 @@ provides:
             path: api/generate
         -
             description: >-
-                The running (or last) generation's progress: phase (models, planning, depth, embedding, done, cancelled,
-                failed), keyframes done / total, frames per second, ETA, bytes written into the recording.
+                The running (or last) generation's progress: phase (models, post_process, planning, map, embedding,
+                done, cancelled, failed), keyframes done / total, frames per second, ETA, bytes written into the
+                recording.
             method: GET
             path: api/generate
         -

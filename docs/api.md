@@ -79,7 +79,7 @@ type Models = {
 
 ```ts
 type Progress = {
-    phase: "idle" | "models" | "planning" | "depth" | "embedding" | "done" | "cancelled" | "failed"
+    phase: "idle" | "models" | "post_process" | "planning" | "map" | "embedding" | "done" | "cancelled" | "failed"
     done: number
     total: number
     skipped: number

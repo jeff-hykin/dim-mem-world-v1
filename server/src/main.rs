@@ -97,6 +97,10 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    {
+        let state = state.clone();
+        tokio::spawn(async move { state.resume_interrupted().await });
+    }
     let frontend = args.frontend.clone().unwrap_or_else(|| PathBuf::from("frontend/dist"));
     eprintln!("memory world: page {}, data {}, recordings {}", frontend.display(), data.display(), recordings.display());
     let router = api::routes()
