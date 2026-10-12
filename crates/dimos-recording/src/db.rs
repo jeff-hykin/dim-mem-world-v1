@@ -98,13 +98,16 @@ pub fn unpickle_bytes(data: &[u8]) -> Option<&[u8]> {
     (body.get(length) == Some(&b'.')).then_some(payload)
 }
 
-/// Calls `each` for every row of `stream` in timestamp order. `each` returns false to stop early.
+/// Calls `each` for every row of `stream` in row order (recorders append in time order; a caller that needs exact
+/// time order sorts). Row order streams: `ORDER BY ts` (not indexed) would make SQLite sort every row WITH its blob
+/// before the first one comes back (a 46 GB recording peaked at 14.8 GB just to read its first image). `each` returns
+/// false to stop early.
 pub fn for_each(db: &Connection, stream: &DbStream, mut each: impl FnMut(DbRow) -> Result<bool>) -> Result<()> {
     let table = quote(&stream.name);
     let blob = quote(&format!("{}_blob", stream.name));
     let mut statement = db.prepare(&format!(
         "SELECT m.ts, m.pose_x, m.pose_y, m.pose_z, m.pose_qx, m.pose_qy, m.pose_qz, m.pose_qw, b.data \
-         FROM {table} AS m JOIN {blob} AS b ON b.id = m.id ORDER BY m.ts"
+         FROM {table} AS m JOIN {blob} AS b ON b.id = m.id ORDER BY m.id"
     ))?;
     let mut rows = statement.query([])?;
     while let Some(row) = rows.next()? {
