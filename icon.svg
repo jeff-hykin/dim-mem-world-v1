@@ -1,7 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-  <!-- a cube in space with a search lens: where things are, in 3D -->
-  <path d="M3.5 8 10 4.5 16.5 8v7.5L10 19l-6.5-3.5z"/>
-  <path d="M3.5 8 10 11.5 16.5 8M10 11.5V19"/>
-  <circle cx="17" cy="16.5" r="3.2"/>
-  <path d="m19.4 18.9 2.1 2.1"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="5.5 5.5 53 53" width="64" height="64" role="img" aria-label="Memory World">
+  <!-- dimOS app icon set v6 (as dim-map-builder's): neon gradient glyph with a soft bloom; a cube in space with a search lens -->
+  <defs>
+    <filter id="bloom" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4"/></filter>
+    <linearGradient id="a" gradientUnits="userSpaceOnUse" x1="0" y1="14" x2="0" y2="50"><stop offset="0" stop-color="#7af0ff"/><stop offset="1" stop-color="#a46bff"/></linearGradient>
+    <g id="glyph">
+      <g fill="url(#a)">
+        <path d="M30 16.5l-12.5 6.8 12.5 6.8 12.5-6.8z" opacity=".95"/>
+        <path d="M16 25.6l12.5 6.8v14.6L16 40.2z" opacity=".55"/>
+        <path d="M31.5 32.4l12.5-6.8v7.2a10.5 10.5 0 0 0-12.5 10.3z"/>
+      </g>
+      <g fill="none" stroke="url(#a)" stroke-width="3.4" stroke-linecap="round">
+        <circle cx="41.5" cy="42" r="6.6"/>
+        <path d="M46.3 46.8l4.6 4.6"/>
+      </g>
+    </g>
+    <linearGradient id="scanrow" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff"/><stop offset=".25" stop-color="#e2e2e2"/><stop offset=".5" stop-color="#c2c2c2"/><stop offset=".75" stop-color="#e2e2e2"/><stop offset="1" stop-color="#fff"/></linearGradient>
+    <pattern id="scan" width="64" height="3.6" patternUnits="userSpaceOnUse"><rect width="64" height="3.6" fill="url(#scanrow)"/></pattern>
+    <mask id="scanlines" maskUnits="userSpaceOnUse" x="-16" y="-16" width="96" height="96"><rect x="-16" y="-16" width="96" height="96" fill="url(#scan)"/></mask>
+    <filter id="core" x="-20%" y="-20%" width="140%" height="140%"><feMorphology in="SourceAlpha" operator="erode" radius="0.9" result="e"/><feGaussianBlur in="e" stdDeviation="0.45" result="eb"/><feFlood flood-color="#fffaf0" flood-opacity=".78"/><feComposite in2="eb" operator="in" result="c"/><feMerge><feMergeNode in="SourceGraphic"/><feMergeNode in="c"/></feMerge></filter>
+  </defs>
+  <g transform="translate(32 32) scale(1.12) translate(-32 -32)">
+    <use href="#glyph" filter="url(#bloom)"/>
+    <g mask="url(#scanlines)"><use href="#glyph" filter="url(#core)"/></g>
+  </g>
 </svg>
