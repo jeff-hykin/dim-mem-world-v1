@@ -50,8 +50,8 @@ pub struct Progress {
     pub written_bytes: u64,
     pub generation: u64,
     pub message: String,
-    /// milliseconds per keyframe so far, by step: decode (the frame), siglip (the three
-    /// members), owl, write (thumbnail JPEG, f16 blobs, the append); reading frames from the recording is the rest
+    /// milliseconds per keyframe so far, by step: decode (the frame), models (the three SigLIP2
+    /// members and OWLv2, at once on a GPU), write (thumbnail JPEG, f16 blobs, the append); reading frames from the recording is the rest
     pub step_ms: BTreeMap<String, f64>,
 }
 
@@ -227,10 +227,20 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
                 };
                 let rgb = decode_image(encoding, kind, payload)?.to_rgb()?;
                 spent("decode");
-                let grids = members.iter().map(|m| m.embed_grid(&rgb)).collect::<Result<Vec<_>>>()?;
-                spent("siglip");
-                let boxes = owl.features(&rgb)?;
-                spent("owl");
+                // on a GPU the four models run at once (it overlaps them: ~57 ms a keyframe vs ~76 ms in turn on an
+                // M-series Mac); on the CPU each already uses every core
+                let (grids, boxes) = if members[0].device() == crate::onnx::Device::Cpu {
+                    (members.iter().map(|m| m.embed_grid(&rgb)).collect::<Result<Vec<_>>>(), owl.features(&rgb))
+                } else {
+                    std::thread::scope(|scope| {
+                        let handles: Vec<_> = members.iter().map(|m| scope.spawn(|| m.embed_grid(&rgb))).collect();
+                        let boxes = owl.features(&rgb);
+                        let grids = handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("an embedding thread panicked")))).collect::<Result<Vec<_>>>();
+                        (grids, boxes)
+                    })
+                };
+                let (grids, boxes) = (grids?, boxes?);
+                spent("models");
                 let thumb = crate::siglip::resize_rgb(&rgb, thumb_camera.width, thumb_camera.height);
                 let (translation, rotation) = tf::parts(&pose);
                 let shapes: BTreeMap<&str, [u32; 2]> = members.iter().zip(&grids).map(|(m, g)| (m.key.as_str(), [g.rows, g.cols])).collect();

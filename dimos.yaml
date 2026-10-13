@@ -64,8 +64,8 @@ provides:
             path: api/open
         -
             description: >-
-                The model files (downloaded at run time, about 5.7 GB in all): per file bytes done and state, overall
-                progress, speed and ETA.
+                The model files (downloaded at run time, about 5.7 GB in all, 7.1 GB on a Mac with its CoreML copies): per
+                file bytes done and state, overall progress, speed and ETA.
             method: GET
             path: api/models
         -

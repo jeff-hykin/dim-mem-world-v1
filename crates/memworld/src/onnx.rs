@@ -1,9 +1,8 @@
 //! ONNX Runtime, loaded at run time from the library the nix build points `ORT_DYLIB_PATH` at (no Python, no model
-//! code compiled in). One environment per process; sessions are built per model file, on the GPU when there is one
-//! (CoreML on a Mac, CUDA on Nvidia), and rebuilt on the CPU when the GPU can't load or run a model.
+//! code compiled in). One environment per process; sessions are built per model file, on CUDA when there's an Nvidia
+//! GPU, and rebuilt on the CPU when the GPU can't load or run a model. A Mac's GPU is native CoreML (coreml.rs).
 use anyhow::{Context, Result};
-use ort::execution_providers::{CUDAExecutionProvider, CoreMLExecutionProvider, ExecutionProviderDispatch};
-use ort::execution_providers::coreml::{CoreMLComputeUnits, CoreMLModelFormat};
+use ort::execution_providers::{CUDAExecutionProvider, ExecutionProviderDispatch};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use std::path::{Path, PathBuf};
@@ -65,34 +64,22 @@ pub fn wanted_device() -> Device {
     }
 }
 
-fn provider(device: Device, path: &Path, fixed: &[(&str, i64)]) -> Option<ExecutionProviderDispatch> {
+fn provider(device: Device) -> Option<ExecutionProviderDispatch> {
     match device {
-        Device::Cpu => None,
-        // compiled CoreML models are cached beside the onnx file, one per shape (a compile takes minutes; a cached load, seconds)
-        Device::Coreml => Some(
-            CoreMLExecutionProvider::default()
-                .with_model_format(CoreMLModelFormat::MLProgram)
-                .with_compute_units(match std::env::var("MEMWORLD_COREML_UNITS").as_deref() {
-                    Ok("all") => CoreMLComputeUnits::All,
-                    Ok("ane") => CoreMLComputeUnits::CPUAndNeuralEngine,
-                    _ => CoreMLComputeUnits::CPUAndGPU,
-                })
-                .with_model_cache_dir(path.with_extension(fixed.iter().fold(format!("coreml{}", std::env::var("MEMWORLD_COREML_UNITS").map(|units| format!("-{units}")).unwrap_or_default()), |name, (dim, size)| format!("{name}.{dim}{size}"))).display())
-                .build()
-                .error_on_failure(),
-        ),
+        // a Mac's image models run natively (coreml.rs); what's left on ONNX Runtime there runs on the CPU
+        Device::Cpu | Device::Coreml => None,
         Device::Cuda => Some(CUDAExecutionProvider::default().build().error_on_failure()),
     }
 }
 
-/// `fixed` pins a model's named dynamic dimensions (CoreML compiles only fixed shapes).
+/// `fixed` pins a model's named dynamic dimensions.
 fn build(path: &Path, device: Device, fixed: &[(&str, i64)]) -> Result<Session> {
     init()?;
     let mut builder = Session::builder()?.with_optimization_level(GraphOptimizationLevel::Level3)?.with_intra_threads(threads())?;
     for (name, size) in fixed {
         builder = builder.with_dimension_override(*name, *size)?;
     }
-    if let Some(provider) = provider(device, path, fixed) {
+    if let Some(provider) = provider(device) {
         builder = builder.with_execution_providers([provider])?;
     }
     builder.commit_from_file(path).with_context(|| format!("loading {} on {device:?}", path.display()))
@@ -112,6 +99,7 @@ impl Model {
     }
 
     pub fn load_on(path: &Path, fixed: &[(&str, i64)], wanted: Device) -> Result<Model> {
+        let wanted = if wanted == Device::Coreml { Device::Cpu } else { wanted };
         let (session, device) = match build(path, wanted, fixed) {
             Ok(session) => (session, wanted),
             Err(error) if wanted != Device::Cpu => {

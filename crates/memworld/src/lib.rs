@@ -4,6 +4,8 @@
 pub mod blob;
 pub mod camera;
 pub mod compat;
+#[cfg(target_os = "macos")]
+pub mod coreml;
 pub mod generate;
 pub mod lidar;
 pub mod lite_record;

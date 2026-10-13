@@ -14,10 +14,13 @@ dimos-desktop install https://github.com/jeff-hykin/dim-mem-world-v1
    intrinsics (CameraInfo), a lidar, and poses: tf from `map` / `world` / `odom` to the camera and the lidar. A raw
    lidar + IMU recording (lite_record's) gets its poses from lite_record's `post_process` first, run in place (lite_record
    is part of the nix build). The check names whatever is missing.
-2. **Models** are downloaded the first time (about 5.7 GB, each file's sha256 checked, partial downloads resumed): three
-   SigLIP2 models and OWLv2 (split into its image and text halves), all from this repo's
-   [`models-v1` release](https://github.com/jeff-hykin/dim-mem-world-v1/releases/tag/models-v1). They run on ONNX
-   Runtime from nixpkgs.
+2. **Models** are downloaded the first time (about 5.7 GB, 7.1 GB on a Mac; each file's sha256 checked, partial
+   downloads resumed): three SigLIP2 models and OWLv2 (split into its image and text halves), from this repo's
+   `models-v1`/`v2`/`v3` releases. **Where they run:** on a Mac the image models are native CoreML (fp16, the GPU;
+   `tools/export_coreml.py`, compiled once on the machine, then loaded in about a second); on x86_64 Linux with an
+   Nvidia GPU, ONNX Runtime's CUDA build; anywhere else, and whenever the GPU can't load or run a model (out of memory
+   included), ONNX Runtime on the CPU. `MEMWORLD_DEVICE=cpu|coreml|cuda` overrides the choice; `GET api/status` says
+   which. On an M-series Mac a keyframe takes ~0.2 s (CPU: ~18 s).
 3. **Generate** writes the memory **into the recording itself** (new tables in a `.db`, new channels appended in place
    to an `.mcap`; nothing beside it): the lidar's 5 cm voxel map, and one keyframe per second, each with its camera pose,
    a JPEG, and **three per-patch embedding grids**: SigLIP2 base-patch16-224, base-patch16-NaFlex and

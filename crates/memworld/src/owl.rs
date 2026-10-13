@@ -88,7 +88,12 @@ impl Features {
 }
 
 pub struct Owl {
-    vision: onnx::Model,
+    /// on a Mac, the native CoreML model (dropped for ONNX Runtime on the CPU if it ever fails)
+    #[cfg(target_os = "macos")]
+    native: Mutex<Option<std::sync::Arc<crate::coreml::Native>>>,
+    /// ONNX Runtime's session, built on first use
+    vision: Mutex<Option<std::sync::Arc<onnx::Model>>>,
+    vision_path: std::path::PathBuf,
     text: Mutex<Option<onnx::Model>>,
     text_path: std::path::PathBuf,
     tokenizer: tokenizers::Tokenizer,
@@ -96,27 +101,62 @@ pub struct Owl {
 
 impl Owl {
     pub fn load(dir: &Path) -> Result<Owl> {
-        let vision = onnx::Model::load(&dir.join("owlv2.vision.onnx"), &[])?;
         let tokenizer = tokenizers::Tokenizer::from_file(dir.join("owlv2.tokenizer.json")).map_err(|e| anyhow::anyhow!("owlv2 tokenizer: {e}"))?;
-        Ok(Owl { vision, text: Mutex::new(None), text_path: dir.join("owlv2.text.onnx"), tokenizer })
+        Ok(Owl {
+            #[cfg(target_os = "macos")]
+            native: Mutex::new(crate::coreml::load_if_wanted(dir, "owlv2.vision")),
+            vision: Mutex::new(None),
+            vision_path: dir.join("owlv2.vision.onnx"),
+            text: Mutex::new(None),
+            text_path: dir.join("owlv2.text.onnx"),
+            tokenizer,
+        })
     }
 
     pub fn device(&self) -> onnx::Device {
-        self.vision.device()
+        #[cfg(target_os = "macos")]
+        if self.native.lock().unwrap().is_some() {
+            return onnx::Device::Coreml;
+        }
+        self.vision.lock().unwrap().as_ref().map(|model| model.device()).unwrap_or_else(onnx::wanted_device)
+    }
+
+    fn session(&self) -> Result<std::sync::Arc<onnx::Model>> {
+        let mut guard = self.vision.lock().unwrap();
+        if guard.is_none() {
+            *guard = Some(std::sync::Arc::new(onnx::Model::load(&self.vision_path, &[])?));
+        }
+        Ok(guard.as_ref().unwrap().clone())
     }
 
     /// The image half for one frame.
     pub fn features(&self, rgb: &Rgb) -> Result<Features> {
         let pixels = preprocess(rgb);
-        self.vision.run(|session| {
-            let out = session.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], pixels.clone()))?])?;
-            let take = |name: &str, len: usize| -> Result<Vec<f32>> {
-                let (_, data) = out[name].try_extract_tensor::<f32>()?;
-                if data.len() != len {
-                    bail!("OWLv2 {name}: {} values, expected {len}", data.len());
+        let check = |name: &str, data: Vec<f32>, len: usize| -> Result<Vec<f32>> {
+            if data.len() != len {
+                bail!("OWLv2 {name}: {} values, expected {len}", data.len());
+            }
+            Ok(data)
+        };
+        #[cfg(target_os = "macos")]
+        {
+            let native = self.native.lock().unwrap().clone();
+            if let Some(native) = native {
+                match native.run(&[("pixel_values", &[1, 3, SIZE as usize, SIZE as usize], &pixels)], &["class_embeds", "logit_shift", "logit_scale", "boxes"]) {
+                    Ok(outputs) => {
+                        let [class_embeds, shift, scale, boxes]: [Vec<f32>; 4] = outputs.try_into().map_err(|_| anyhow::anyhow!("OWLv2: wrong output count"))?;
+                        return Ok(Features { class_embeds: check("class_embeds", class_embeds, PATCHES * DIM)?, shift: check("logit_shift", shift, PATCHES)?, scale: check("logit_scale", scale, PATCHES)?, boxes: check("boxes", boxes, PATCHES * 4)? });
+                    }
+                    Err(error) => {
+                        eprintln!("[memworld] OWLv2 failed on CoreML, moving it to the CPU: {error:#}");
+                        *self.native.lock().unwrap() = None;
+                    }
                 }
-                Ok(data.to_vec())
-            };
+            }
+        }
+        self.session()?.run(|session| {
+            let out = session.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], pixels.clone()))?])?;
+            let take = |name: &str, len: usize| -> Result<Vec<f32>> { check(name, out[name].try_extract_tensor::<f32>()?.1.to_vec(), len) };
             Ok(Features { class_embeds: take("class_embeds", PATCHES * DIM)?, shift: take("logit_shift", PATCHES)?, scale: take("logit_scale", PATCHES)?, boxes: take("boxes", PATCHES * 4)? })
         })
     }

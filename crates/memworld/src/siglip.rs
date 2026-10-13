@@ -44,7 +44,10 @@ pub struct Grid {
 pub struct Member {
     pub key: String,
     pub spec: Spec,
-    /// built for one patch count at a time (CoreML compiles fixed shapes; a NaFlex count follows the frame's shape)
+    /// on a Mac, the native CoreML model (dropped for ONNX Runtime on the CPU if it ever fails)
+    #[cfg(target_os = "macos")]
+    native: Mutex<Option<Arc<crate::coreml::Native>>>,
+    /// ONNX Runtime's session, built for one patch count at a time
     vision: Mutex<Option<(usize, Arc<onnx::Model>)>>,
     vision_path: std::path::PathBuf,
     text: Mutex<Option<onnx::Model>>,
@@ -65,11 +68,80 @@ impl Member {
         } else {
             None
         };
-        Ok(Member { key: key.into(), spec, vision: Mutex::new(None), vision_path: dir.join(format!("{key}.vision.onnx")), text: Mutex::new(None), text_path: dir.join(format!("{key}.text.onnx")), tokenizer, pos_grid })
+        Ok(Member {
+            key: key.into(),
+            spec,
+            #[cfg(target_os = "macos")]
+            native: Mutex::new(crate::coreml::load_if_wanted(dir, &format!("{key}.vision"))),
+            vision: Mutex::new(None),
+            vision_path: dir.join(format!("{key}.vision.onnx")),
+            text: Mutex::new(None),
+            text_path: dir.join(format!("{key}.text.onnx")),
+            tokenizer,
+            pos_grid,
+        })
     }
 
     pub fn device(&self) -> onnx::Device {
+        #[cfg(target_os = "macos")]
+        if self.native.lock().unwrap().is_some() {
+            return onnx::Device::Coreml;
+        }
         self.vision.lock().unwrap().as_ref().map(|(_, model)| model.device()).unwrap_or_else(onnx::wanted_device)
+    }
+
+    /// The vision tower on `inputs` (name, shape, values): natively on a Mac, else ONNX Runtime's session for `n`
+    /// patches (0 = the fixed-size member). Returns the output's shape and values.
+    fn infer(&self, n: usize, inputs: &[(&str, Vec<usize>, Vec<f32>)]) -> Result<(Vec<i64>, Vec<f32>)> {
+        #[cfg(target_os = "macos")]
+        {
+            let native = self.native.lock().unwrap().clone();
+            if let Some(native) = native {
+                // a NaFlex member's CoreML model is always max_patches long (a fixed shape stays on the GPU): the
+                // frame's patches, zeros after them, and a mask saying which is which
+                let budget = self.spec.max_patches.unwrap_or(1024) as usize;
+                let mut owned: Vec<(&str, Vec<usize>, Vec<f32>)> = Vec::new();
+                for (name, shape, values) in inputs {
+                    if n == 0 {
+                        owned.push((name, shape.clone(), values.clone()));
+                    } else {
+                        let mut padded = values.clone();
+                        padded.resize(budget * shape[2], 0.0);
+                        owned.push((name, vec![1, budget, shape[2]], padded));
+                    }
+                }
+                if n > 0 {
+                    let mut mask = vec![1.0f32; n];
+                    mask.resize(budget, 0.0);
+                    owned.push(("mask", vec![1, budget], mask));
+                }
+                let borrowed: Vec<(&str, &[usize], &[f32])> = owned.iter().map(|(name, shape, values)| (*name, shape.as_slice(), values.as_slice())).collect();
+                match native.run(&borrowed, &["embeddings"]) {
+                    Ok(mut outputs) => {
+                        let mut data = outputs.remove(0);
+                        let (rows, cols) = self.grid_shape(0, 0);
+                        let cells = if n == 0 { (rows * cols) as usize } else { n };
+                        let padded_rows = if n == 0 { cells } else { budget };
+                        let dim = data.len() / padded_rows.max(1);
+                        data.truncate(cells * dim);
+                        return Ok((vec![1, cells as i64, dim as i64], data));
+                    }
+                    Err(error) => {
+                        eprintln!("[memworld] {} failed on CoreML, moving it to the CPU: {error:#}", self.key);
+                        *self.native.lock().unwrap() = None;
+                    }
+                }
+            }
+        }
+        self.vision(n)?.run(|session| {
+            let mut values: Vec<(String, ort::session::SessionInputValue)> = Vec::new();
+            for (name, shape, data) in inputs {
+                values.push((name.to_string(), Tensor::from_array((shape.clone(), data.clone()))?.into()));
+            }
+            let out = session.run(values)?;
+            let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
+            Ok((shape.to_vec(), data.to_vec()))
+        })
     }
 
     /// The vision session for `n` patches (0 = the fixed-size member).
@@ -108,24 +180,13 @@ impl Member {
             let side = self.spec.pos_grid_side.context("NaFlex member without pos_grid_side")?;
             let pos = resize_pos(self.pos_grid.as_ref().context("NaFlex member without pos grid")?, side, self.spec.dim, rows as usize, cols as usize);
             let n = (rows * cols) as usize;
-            let (shape, data) = self.vision(n)?.run(|session| {
-                let patch_values = Tensor::from_array(([1usize, n, (patch * patch * 3) as usize], patches.clone()))?;
-                let pos_values = Tensor::from_array(([1usize, n, self.spec.dim], pos.clone()))?;
-                let out = session.run(ort::inputs!["patches" => patch_values, "pos" => pos_values])?;
-                let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
-                Ok((shape.to_vec(), data.to_vec()))
-            })?;
+            let (shape, data) = self.infer(n, &[("patches", vec![1, n, (patch * patch * 3) as usize], patches), ("pos", vec![1, n, self.spec.dim], pos)])?;
             (rows, cols, shape, data)
         } else {
             let size = self.spec.image_size.context("fixed member without image_size")?;
             let resized = resize_rgb(rgb, size, size);
             let pixels = planar(&resized);
-            let (shape, data) = self.vision(0)?.run(|session| {
-                let input = Tensor::from_array(([1usize, 3, size as usize, size as usize], pixels.clone()))?;
-                let out = session.run(ort::inputs!["pixel_values" => input])?;
-                let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
-                Ok((shape.to_vec(), data.to_vec()))
-            })?;
+            let (shape, data) = self.infer(0, &[("pixel_values", vec![1, 3, size as usize, size as usize], pixels)])?;
             (size / patch, size / patch, shape, data)
         };
         let (rows, cols, shape, data) = outputs;

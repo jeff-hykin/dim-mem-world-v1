@@ -51,7 +51,7 @@ fn per_patch_embeddings_match_transformers() {
             let i: usize = index.parse().unwrap();
             worst = worst.min(cosine(&grid.data[i * grid.dim..(i + 1) * grid.dim], &floats(values)));
         }
-        eprintln!("{key}: grid {}x{}, mean cosine {mean_cosine:.4}, worst sampled patch cosine {worst:.4}", grid.rows, grid.cols);
+        eprintln!("{key} on {:?}: grid {}x{}, mean cosine {mean_cosine:.4}, worst sampled patch cosine {worst:.4}", member.device(), grid.rows, grid.cols);
         // the resize differs slightly from PIL's; the embeddings must still be the same embeddings
         assert!(mean_cosine > 0.99, "{key}: mean cosine {mean_cosine}");
         assert!(worst > 0.95, "{key}: a patch's cosine is {worst}");

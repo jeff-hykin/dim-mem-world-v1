@@ -40,8 +40,18 @@ const FILES: [(&str, &str, &str, u64, &str); 17] = [
     ("models-v1", "owlv2.tokenizer.json", "owlv2", 3642370, "fbf857dd4099afc6da394d17cba2f22c5d01eb6d87bb74967c90634f3bcf4e82"),
 ];
 
+/// A Mac also gets the image models as native CoreML packages (tools/export_coreml.py): its GPU runs those, and the
+/// ONNX files above stay as the CPU fallback.
+const MAC_FILES: [(&str, &str, &str, u64, &str); 4] = [
+    ("models-v3", "base224.vision.mlpackage.tar", "base224", 183570432, "3d4e78471f25b0c33718fd79c58399e91ff045bbfcbedc2cb6a22f226269f7ca"),
+    ("models-v3", "base_naflex.vision.mlpackage.tar", "base_naflex", 183271424, "fc765398e7f156b16819aa22bb893022bedff54609d8b3c558ab9e3cb5b162ef"),
+    ("models-v3", "so400m_naflex.vision.mlpackage.tar", "so400m_naflex", 850214912, "fe5ca4dd15af40e2eedfe596a4c0eef260b5105427febeb052d8b2f92a958a31"),
+    ("models-v3", "owlv2.vision.mlpackage.tar", "owlv2", 180380672, "09294c4e9462a0cebfc3ac2c95fd013ff7826a9a221533fd8a8692580517eac9"),
+];
+
 pub fn files() -> Vec<ModelFile> {
-    FILES.iter().map(|&(release, name, model, bytes, sha256)| ModelFile { name, model, url: format!("{RELEASES}/{release}/{name}"), bytes, sha256 }).collect()
+    let mac: &[(&str, &str, &str, u64, &str)] = if cfg!(target_os = "macos") { &MAC_FILES } else { &[] };
+    FILES.iter().chain(mac).map(|&(release, name, model, bytes, sha256)| ModelFile { name, model, url: format!("{RELEASES}/{release}/{name}"), bytes, sha256 }).collect()
 }
 
 /// Where the models live: `$MEMWORLD_MODELS`, else `<app data>/models`.
@@ -78,6 +88,6 @@ mod tests {
         }
         assert!(files().iter().all(|f| f.sha256.len() == 64 && f.bytes > 0 && f.url.starts_with(RELEASES)));
         // about 5.7 GB in all: the progress bar's denominator
-        assert!((5_000_000_000..6_000_000_000).contains(&total_bytes()));
+        assert!((5_000_000_000..8_000_000_000).contains(&total_bytes()));
     }
 }
