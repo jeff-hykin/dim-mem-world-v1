@@ -197,10 +197,11 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
     let recording = Recording::open(path)?;
 
     progress.phase = "embedding".into();
-    progress.message = format!("embedding {} keyframes with {} models + OWLv2", todo.len(), members.len());
+    // the first keyframe also compiles the models for the GPU (minutes, once per machine and frame shape)
+    progress.message = format!("preparing the models on {:?}, then embedding {} keyframes", crate::onnx::wanted_device(), todo.len());
     report(&progress);
     let wanted: HashSet<u64> = todo.iter().map(|t| key(*t)).collect();
-    let embed_started = Instant::now();
+    let mut embed_started = Instant::now();
     let mut embedded = 0u64;
     let mut in_batch = 0usize;
     let mut failure: Option<anyhow::Error> = None;
@@ -237,6 +238,11 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
             })();
             match step {
                 Ok(true) => {
+                    if embedded == 0 {
+                        // the rate leaves out the first keyframe's compile
+                        embed_started = Instant::now();
+                        progress.message = format!("embedding {} keyframes with {} models + OWLv2 on {:?}", todo.len(), members.len(), members[0].device());
+                    }
                     embedded += 1;
                     progress.done += 1;
                     in_batch += 1;
@@ -254,8 +260,8 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
             let elapsed = embed_started.elapsed().as_secs_f64();
             progress.elapsed_s = started.elapsed().as_secs_f64();
             progress.written_bytes = writer.written();
-            if embedded > 0 {
-                let rate = embedded as f64 / elapsed;
+            if embedded > 1 {
+                let rate = (embedded - 1) as f64 / elapsed;
                 progress.frames_per_s = Some(rate);
                 let remaining = progress.total.saturating_sub(progress.done + progress.skipped);
                 progress.eta_s = Some(remaining as f64 / rate);

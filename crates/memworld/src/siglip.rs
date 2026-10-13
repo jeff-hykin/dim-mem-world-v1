@@ -8,11 +8,10 @@
 use crate::onnx;
 use anyhow::{bail, Context, Result};
 use dimos_recording::image::Rgb;
-use ort::session::Session;
 use ort::value::Tensor;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// The three members, in the order they're shown and stored (the release's file prefixes).
 pub const MEMBERS: [&str; 3] = ["base224", "base_naflex", "so400m_naflex"];
@@ -45,8 +44,10 @@ pub struct Grid {
 pub struct Member {
     pub key: String,
     pub spec: Spec,
-    vision: Mutex<Session>,
-    text: Mutex<Option<Session>>,
+    /// built for one patch count at a time (CoreML compiles fixed shapes; a NaFlex count follows the frame's shape)
+    vision: Mutex<Option<(usize, Arc<onnx::Model>)>>,
+    vision_path: std::path::PathBuf,
+    text: Mutex<Option<onnx::Model>>,
     text_path: std::path::PathBuf,
     tokenizer: tokenizers::Tokenizer,
     pos_grid: Option<Vec<f32>>,
@@ -57,15 +58,32 @@ impl Member {
     /// (generation never needs it).
     pub fn load(dir: &Path, key: &str) -> Result<Member> {
         let spec: Spec = serde_json::from_slice(&std::fs::read(dir.join(format!("{key}.json"))).with_context(|| format!("{key}.json"))?)?;
-        let vision = onnx::session(&dir.join(format!("{key}.vision.onnx")))?;
-        let tokenizer = tokenizers::Tokenizer::from_file(dir.join(format!("{key}.tokenizer.json"))).map_err(|e| anyhow::anyhow!("{key} tokenizer: {e}"))?;
+                let tokenizer = tokenizers::Tokenizer::from_file(dir.join(format!("{key}.tokenizer.json"))).map_err(|e| anyhow::anyhow!("{key} tokenizer: {e}"))?;
         let pos_grid = if spec.naflex {
             let bytes = std::fs::read(dir.join(format!("{key}.pos_grid.bin")))?;
             Some(bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect())
         } else {
             None
         };
-        Ok(Member { key: key.into(), spec, vision: Mutex::new(vision), text: Mutex::new(None), text_path: dir.join(format!("{key}.text.onnx")), tokenizer, pos_grid })
+        Ok(Member { key: key.into(), spec, vision: Mutex::new(None), vision_path: dir.join(format!("{key}.vision.onnx")), text: Mutex::new(None), text_path: dir.join(format!("{key}.text.onnx")), tokenizer, pos_grid })
+    }
+
+    pub fn device(&self) -> onnx::Device {
+        self.vision.lock().unwrap().as_ref().map(|(_, model)| model.device()).unwrap_or_else(onnx::wanted_device)
+    }
+
+    /// The vision session for `n` patches (0 = the fixed-size member).
+    fn vision(&self, n: usize) -> Result<Arc<onnx::Model>> {
+        let mut guard = self.vision.lock().unwrap();
+        if let Some((built_for, model)) = guard.as_ref() {
+            if *built_for == n {
+                return Ok(model.clone());
+            }
+        }
+        let fixed: Vec<(&str, i64)> = if n == 0 { vec![("batch", 1)] } else { vec![("n", n as i64)] };
+        let model = Arc::new(onnx::Model::load(&self.vision_path, &fixed)?);
+        *guard = Some((n, model.clone()));
+        Ok(model)
     }
 
     pub fn grid_shape(&self, width: u32, height: u32) -> (u32, u32) {
@@ -82,7 +100,6 @@ impl Member {
 
     pub fn embed_grid(&self, rgb: &Rgb) -> Result<Grid> {
         let patch = self.spec.patch;
-        let mut vision = self.vision.lock().unwrap();
         let outputs = if self.spec.naflex {
             let (h, w) = naflex_size(rgb.height, rgb.width, patch, self.spec.max_patches.unwrap_or(1024));
             let (rows, cols) = (h / patch, w / patch);
@@ -91,19 +108,25 @@ impl Member {
             let side = self.spec.pos_grid_side.context("NaFlex member without pos_grid_side")?;
             let pos = resize_pos(self.pos_grid.as_ref().context("NaFlex member without pos grid")?, side, self.spec.dim, rows as usize, cols as usize);
             let n = (rows * cols) as usize;
-            let patch_values = Tensor::from_array(([1usize, n, (patch * patch * 3) as usize], patches))?;
-            let pos_values = Tensor::from_array(([1usize, n, self.spec.dim], pos))?;
-            let out = vision.run(ort::inputs!["patches" => patch_values, "pos" => pos_values])?;
-            let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
-            (rows, cols, shape.to_vec(), data.to_vec())
+            let (shape, data) = self.vision(n)?.run(|session| {
+                let patch_values = Tensor::from_array(([1usize, n, (patch * patch * 3) as usize], patches.clone()))?;
+                let pos_values = Tensor::from_array(([1usize, n, self.spec.dim], pos.clone()))?;
+                let out = session.run(ort::inputs!["patches" => patch_values, "pos" => pos_values])?;
+                let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
+                Ok((shape.to_vec(), data.to_vec()))
+            })?;
+            (rows, cols, shape, data)
         } else {
             let size = self.spec.image_size.context("fixed member without image_size")?;
             let resized = resize_rgb(rgb, size, size);
             let pixels = planar(&resized);
-            let input = Tensor::from_array(([1usize, 3, size as usize, size as usize], pixels))?;
-            let out = vision.run(ort::inputs!["pixel_values" => input])?;
-            let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
-            (size / patch, size / patch, shape.to_vec(), data.to_vec())
+            let (shape, data) = self.vision(0)?.run(|session| {
+                let input = Tensor::from_array(([1usize, 3, size as usize, size as usize], pixels.clone()))?;
+                let out = session.run(ort::inputs!["pixel_values" => input])?;
+                let (shape, data) = out["embeddings"].try_extract_tensor::<f32>()?;
+                Ok((shape.to_vec(), data.to_vec()))
+            })?;
+            (size / patch, size / patch, shape, data)
         };
         let (rows, cols, shape, data) = outputs;
         let dim = *shape.last().context("empty output")? as usize;
@@ -130,14 +153,16 @@ impl Member {
         let ids = self.tokens(texts)?;
         let mut guard = self.text.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(onnx::session(&self.text_path)?);
+            // texts come in batches of any size, so the text tower stays on the CPU (~0.1 s a question)
+            *guard = Some(onnx::Model::load_on(&self.text_path, &[], onnx::Device::Cpu)?);
         }
-        let session = guard.as_mut().unwrap();
-        let input = Tensor::from_array(([texts.len(), self.spec.text_length], ids))?;
-        let out = session.run(ort::inputs!["input_ids" => input])?;
-        let (shape, data) = out["embedding"].try_extract_tensor::<f32>()?;
-        let dim = *shape.last().context("empty text output")? as usize;
-        Ok(data.chunks_exact(dim).map(|row| row.to_vec()).collect())
+        guard.as_ref().unwrap().run(|session| {
+            let input = Tensor::from_array(([texts.len(), self.spec.text_length], ids.clone()))?;
+            let out = session.run(ort::inputs!["input_ids" => input])?;
+            let (shape, data) = out["embedding"].try_extract_tensor::<f32>()?;
+            let dim = *shape.last().context("empty text output")? as usize;
+            Ok(data.chunks_exact(dim).map(|row| row.to_vec()).collect())
+        })
     }
 }
 

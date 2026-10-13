@@ -13,7 +13,6 @@ use crate::blob;
 use crate::onnx;
 use anyhow::{bail, Context, Result};
 use dimos_recording::image::Rgb;
-use ort::session::Session;
 use ort::value::Tensor;
 use std::path::Path;
 use std::sync::Mutex;
@@ -89,32 +88,37 @@ impl Features {
 }
 
 pub struct Owl {
-    vision: Mutex<Session>,
-    text: Mutex<Option<Session>>,
+    vision: onnx::Model,
+    text: Mutex<Option<onnx::Model>>,
     text_path: std::path::PathBuf,
     tokenizer: tokenizers::Tokenizer,
 }
 
 impl Owl {
     pub fn load(dir: &Path) -> Result<Owl> {
-        let vision = onnx::session(&dir.join("owlv2.vision.onnx"))?;
+        let vision = onnx::Model::load(&dir.join("owlv2.vision.onnx"), &[])?;
         let tokenizer = tokenizers::Tokenizer::from_file(dir.join("owlv2.tokenizer.json")).map_err(|e| anyhow::anyhow!("owlv2 tokenizer: {e}"))?;
-        Ok(Owl { vision: Mutex::new(vision), text: Mutex::new(None), text_path: dir.join("owlv2.text.onnx"), tokenizer })
+        Ok(Owl { vision, text: Mutex::new(None), text_path: dir.join("owlv2.text.onnx"), tokenizer })
+    }
+
+    pub fn device(&self) -> onnx::Device {
+        self.vision.device()
     }
 
     /// The image half for one frame.
     pub fn features(&self, rgb: &Rgb) -> Result<Features> {
         let pixels = preprocess(rgb);
-        let mut session = self.vision.lock().unwrap();
-        let out = session.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], pixels))?])?;
-        let take = |name: &str, len: usize| -> Result<Vec<f32>> {
-            let (_, data) = out[name].try_extract_tensor::<f32>()?;
-            if data.len() != len {
-                bail!("OWLv2 {name}: {} values, expected {len}", data.len());
-            }
-            Ok(data.to_vec())
-        };
-        Ok(Features { class_embeds: take("class_embeds", PATCHES * DIM)?, shift: take("logit_shift", PATCHES)?, scale: take("logit_scale", PATCHES)?, boxes: take("boxes", PATCHES * 4)? })
+        self.vision.run(|session| {
+            let out = session.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, SIZE as usize, SIZE as usize], pixels.clone()))?])?;
+            let take = |name: &str, len: usize| -> Result<Vec<f32>> {
+                let (_, data) = out[name].try_extract_tensor::<f32>()?;
+                if data.len() != len {
+                    bail!("OWLv2 {name}: {} values, expected {len}", data.len());
+                }
+                Ok(data.to_vec())
+            };
+            Ok(Features { class_embeds: take("class_embeds", PATCHES * DIM)?, shift: take("logit_shift", PATCHES)?, scale: take("logit_scale", PATCHES)?, boxes: take("boxes", PATCHES * 4)? })
+        })
     }
 
     pub fn tokens(&self, text: &str) -> Result<(Vec<i64>, Vec<i64>)> {
@@ -131,15 +135,16 @@ impl Owl {
         let (ids, mask) = self.tokens(text)?;
         let mut guard = self.text.lock().unwrap();
         if guard.is_none() {
-            *guard = Some(onnx::session(&self.text_path)?);
+            *guard = Some(onnx::Model::load_on(&self.text_path, &[("batch", 1)], onnx::Device::Cpu)?);
         }
-        let session = guard.as_mut().unwrap();
-        let out = session.run(ort::inputs![
-            "input_ids" => Tensor::from_array(([1usize, TEXT_LENGTH], ids))?,
-            "attention_mask" => Tensor::from_array(([1usize, TEXT_LENGTH], mask))?,
-        ])?;
-        let (_, data) = out["embedding"].try_extract_tensor::<f32>()?;
-        Ok(data.to_vec())
+        guard.as_ref().unwrap().run(|session| {
+            let out = session.run(ort::inputs![
+                "input_ids" => Tensor::from_array(([1usize, TEXT_LENGTH], ids.clone()))?,
+                "attention_mask" => Tensor::from_array(([1usize, TEXT_LENGTH], mask.clone()))?,
+            ])?;
+            let (_, data) = out["embedding"].try_extract_tensor::<f32>()?;
+            Ok(data.to_vec())
+        })
     }
 
     /// Both halves on one frame (what a frame without stored features costs).

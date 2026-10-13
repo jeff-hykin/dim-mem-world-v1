@@ -12,9 +12,34 @@
     outputs = { self, nixpkgs, rust-overlay, lite_record }:
         let
             systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
-            forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; overlays = [ (import rust-overlay) ]; }));
-            # ONNX Runtime from nixpkgs, loaded by the server at run time (ort's load-dynamic): no model code is compiled in
-            onnxLibrary = pkgs: "${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
+            # unfree: only the CUDA libraries the x86_64 Linux build loads for Nvidia GPUs
+            forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; overlays = [ (import rust-overlay) ]; config.allowUnfree = true; }));
+            # x86_64 Linux: Microsoft's CUDA 12 build of ONNX Runtime (it also runs on the CPU when there's no Nvidia GPU),
+            # its CUDA provider pointed at nixpkgs' CUDA 12 libraries; the driver's libcuda comes from the machine at run time
+            onnxGpu = pkgs:
+                let cuda = pkgs.cudaPackages_12;
+                in pkgs.stdenv.mkDerivation {
+                    pname = "onnxruntime-gpu";
+                    version = "1.22.0";
+                    src = pkgs.fetchzip {
+                        url = "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-gpu-1.22.0.tgz";
+                        hash = "sha256-sOuAeyYT7xBm7kNJuBfE/A6enBNCQipC8T1HkRdnMKE=";
+                    };
+                    nativeBuildInputs = [ pkgs.autoPatchelfHook ];
+                    buildInputs = [ pkgs.stdenv.cc.cc.lib cuda.cuda_cudart cuda.libcublas cuda.libcurand cuda.libcufft cuda.cudnn ];
+                    # TensorRT isn't shipped (its provider is never asked for); libcuda is the driver's
+                    autoPatchelfIgnoreMissingDeps = [ "libcuda.so.1" "libnvinfer.so.10" "libnvinfer_plugin.so.10" "libnvonnxparser.so.10" ];
+                    installPhase = ''
+                        mkdir -p $out
+                        cp -r lib include $out/
+                        rm -f $out/lib/libonnxruntime_providers_tensorrt.so
+                    '';
+                };
+            # ONNX Runtime, loaded by the server at run time (ort's load-dynamic): no model code is compiled in. nixpkgs'
+            # has CoreML on a Mac; Linux on ARM stays on the CPU
+            onnxLibrary = pkgs:
+                if pkgs.stdenv.hostPlatform.system == "x86_64-linux" then "${onnxGpu pkgs}/lib/libonnxruntime.so"
+                else "${pkgs.onnxruntime}/lib/libonnxruntime${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
         in {
             packages = forAllSystems (pkgs:
                 let

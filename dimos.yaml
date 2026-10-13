@@ -6,7 +6,7 @@ uses:
         - GET /recordings
     # the dim-app SDK's zenoh client: Desktop's "recordings changed" events refresh the picker
     "@zenoh-gateway": ">=0.5 <0.6"
-# Desktop's nix builds of this app pull from this cache (CI fills it)
+# Desktop's nix builds of this app pull from this cache (.github/workflows/ci.yml fills it)
 caches:
     - url: https://dimos-desktop.cachix.org
       key: "dimos-desktop.cachix.org-1:A4P35aGJGmCan92LWyamtSFXMqaVE+VRFYnrJ8QMTeQ="
@@ -28,8 +28,8 @@ provides:
         -
             description: >-
                 Everything at a glance: the open recording, its compatibility check (what's missing, if anything), its
-                memory (state none / partial / ready, keyframes), the models (downloaded? progress), the running or last
-                generation, and whether the memory is loaded for questions.
+                memory (state none / partial / ready, keyframes), the models (downloaded? progress), the device they run on
+                (cpu / coreml / cuda), the running or last generation, and whether the memory is loaded for questions.
             method: GET
             path: api/status
             role: context

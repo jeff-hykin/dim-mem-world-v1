@@ -104,6 +104,8 @@ impl App {
             "check": *self.check.read().unwrap(),
             "memory": *self.status.read().unwrap(),
             "models": self.downloads.snapshot(),
+            // where the image models run (cpu, coreml, cuda); a model the GPU can't run falls back to the CPU
+            "device": memworld::onnx::wanted_device(),
             "generation": *self.generation.lock().unwrap(),
             "loaded": loaded,
             "loading": self.loading.load(Ordering::Relaxed),

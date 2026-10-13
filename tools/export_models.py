@@ -96,6 +96,15 @@ def max_abs(a, b):
     return float(np.abs(np.asarray(a) - np.asarray(b)).max())
 
 
+def coreml_friendly(path):
+    """Same math, in a shape ONNX Runtime's CoreML provider runs whole (see tools/coreml_friendly.py)."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import onnx
+    from coreml_friendly import rewrite
+
+    onnx.save(rewrite(onnx.load(str(path))), str(path))
+
+
 def export_member(key, repo, out, image):
     model = AutoModel.from_pretrained(repo).eval()
     processor = AutoProcessor.from_pretrained(repo)
@@ -136,6 +145,7 @@ def export_member(key, repo, out, image):
                 dynamic_axes={"patches": {1: "n"}, "pos": {1: "n"}, "embeddings": {1: "n"}},
                 opset_version=OPSET,
             )
+            coreml_friendly(out / f"{key}.vision.onnx")
             session = ort.InferenceSession(str(out / f"{key}.vision.onnx"))
             onnx_out = session.run(None, {"patches": patches.numpy(), "pos": pos.numpy()})[0][0]
             print(key, "onnx vs torch max abs", max_abs(onnx_out, mine))
@@ -155,6 +165,7 @@ def export_member(key, repo, out, image):
                 dynamic_axes={"pixel_values": {0: "batch"}, "embeddings": {0: "batch"}},
                 opset_version=OPSET,
             )
+            coreml_friendly(out / f"{key}.vision.onnx")
             session = ort.InferenceSession(str(out / f"{key}.vision.onnx"))
             onnx_out = session.run(None, {"pixel_values": inputs["pixel_values"].numpy()})[0][0]
             print(key, "onnx vs torch max abs", max_abs(onnx_out, mine))

@@ -83,7 +83,7 @@ fn required(mut spec: Value) -> Value {
 pub fn routes() -> Routes<Arc<App>> {
     let text = || json!({ "text": required(s("what to look for, a short noun phrase (e.g. \"traffic cone\")")) });
     Routes::new()
-        .endpoint("GET", "api/status", "Everything at a glance: the open recording, its compatibility check (what's missing, if anything), its memory (state none / partial / ready, keyframes), the models (downloaded? progress), the running or last generation, and whether the memory is loaded for questions.", json!({}), status)
+        .endpoint("GET", "api/status", "Everything at a glance: the open recording, its compatibility check (what's missing, if anything), its memory (state none / partial / ready, keyframes), the models (downloaded? progress), the device they run on (cpu / coreml / cuda), the running or last generation, and whether the memory is loaded for questions.", json!({}), status)
         .role("context")
         .endpoint("GET", "api/recordings", "The recordings in Desktop's recordings folder, each with its size, format and memory state (none / partial / ready).", json!({}), recordings)
         .endpoint("GET", "api/recordings/{id}/check", "Whether a recording (id = its file name in the recordings folder) can be used: color images, the camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a raw lidar + IMU that lite_record's post_process gives poses to first); `missing` names each thing it lacks. Also its memory state.", json!({}), check_one)

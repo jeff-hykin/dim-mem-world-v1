@@ -1,7 +1,7 @@
 // Ask the memory: a question box over the 3D scene (the memory's point cloud and the camera's path), each answer's
 // places drawn as boxes the camera flies to, and a panel of the places with their best sighting as evidence.
 import { useEffect, useRef, useState, type FormEvent } from "react"
-import { Alert, Button, Chip, Column, EmptyState, Hud, Icon, IconButton, Progress, Row, Spinner, Text } from "dimos-react"
+import { Alert, Button, Chip, Column, EmptyState, Hud, Icon, IconButton, NumberInput, Progress, Row, Spinner, Text } from "dimos-react"
 import { Scene3D, type Viewer } from "dimos-react/three"
 import { api, type Answer, type AppStatus, type Place } from "../core/api.ts"
 import { meters, plural } from "../core/format.ts"
@@ -52,6 +52,8 @@ export function Ask({ status }: { status: AppStatus }) {
     const sceneRef = useRef<MemoryScene | null>(null)
     const [scene, setScene] = useState<MemoryScene | null>(null)
     const [text, setText] = useState("")
+    // OWLv2's box score cutoff: lower finds more (and more wrong) things
+    const [threshold, setThreshold] = useState(0.2)
     const [asking, setAsking] = useState<{ text: string; since: number } | null>(null)
     const [answer, setAnswer] = useState<Answer | null>(null)
     const [problem, setProblem] = useState<string | null>(null)
@@ -164,7 +166,7 @@ export function Ask({ status }: { status: AppStatus }) {
         setAsking({ text: trimmed, since: Date.now() })
         setNow(Date.now())
         try {
-            show(await api.query(trimmed))
+            show(await api.query(trimmed, threshold))
         } catch (error) {
             setProblem(String((error as Error).message ?? error))
         } finally {
@@ -196,6 +198,10 @@ export function Ask({ status }: { status: AppStatus }) {
                             autoFocus
                             data-query
                         />
+                        <label className="mw-threshold" title="Minimum box score (0–1): lower finds more, and more wrong, things">
+                            min score
+                            <NumberInput size="sm" value={threshold} onChange={setThreshold} min={0.01} max={1} step={0.05} precision={2} data-threshold />
+                        </label>
                         <Button type="submit" variant="primary" disabled={!text.trim() || !!asking} data-action="ask">
                             {asking ? "Looking…" : "Find"}
                         </Button>

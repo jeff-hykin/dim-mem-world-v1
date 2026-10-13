@@ -78,6 +78,8 @@
 }
 .mw-query input::placeholder { color: var(--muted-fg); opacity: 0.8; }
 .mw-query-icon { color: var(--primary); display: flex; }
+.mw-threshold { display: flex; align-items: center; gap: 6px; color: var(--muted-fg); font-size: 12px; white-space: nowrap; }
+.mw-query .mw-threshold input { flex: none; width: 4.5em; font: 500 13px/1.2 var(--mono, var(--sans)); padding: 4px 0; }
 .mw-examples { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin-top: 10px; }
 
 .mw-overlay-note {

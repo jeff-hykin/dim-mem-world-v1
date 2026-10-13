@@ -1339,6 +1339,7 @@ dependencies = [
  "dimos-recording",
  "half",
  "image",
+ "libloading",
  "mcap",
  "nalgebra",
  "ort",

@@ -239,7 +239,7 @@ impl<'a> Engine<'a> {
         timings.place_ms = ms(place_started);
         timings.total_ms = ms(started);
         let world_frame = self.memory.meta["worldFrame"].as_str().unwrap_or("world").to_string();
-        let summary = summarize(text, &places, &observations, &world_frame);
+        let summary = summarize(text, &places, &observations);
         Ok(Answer { query: text.into(), count: places.len(), places, observations, candidates, unplaced, world_frame, timings, summary })
     }
 }
@@ -411,15 +411,13 @@ fn evidence_weight(observation: &Observation) -> f32 {
     observation.score * (1.0 + ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt())
 }
 
-fn summarize(text: &str, places: &[Place], observations: &[Observation], world: &str) -> String {
-    if places.is_empty() {
-        return format!("No \"{text}\" was found in 3D ({} sightings, none with the lidar map behind them).", observations.len());
+/// One short line; the places themselves (positions, sizes, sightings) are in the answer's `places`.
+fn summarize(text: &str, places: &[Place], observations: &[Observation]) -> String {
+    match places.len() {
+        0 => format!("No \"{text}\" found ({} sightings, none placed on the lidar map).", observations.len()),
+        1 => format!("1 place, {:.2} m tall.", places[0].height_m),
+        count => format!("{count} places."),
     }
-    let list: Vec<String> = places
-        .iter()
-        .map(|p| format!("#{} at ({:.2}, {:.2}, {:.2}) m in {world}, about {:.2} m tall, seen in {} frame(s)", p.id + 1, p.center[0], p.center[1], p.center[2], p.height_m, p.observations.len()))
-        .collect();
-    format!("{} place(s) with \"{text}\": {}", places.len(), list.join("; "))
 }
 
 #[cfg(test)]
