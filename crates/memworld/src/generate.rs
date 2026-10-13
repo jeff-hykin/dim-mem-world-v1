@@ -50,6 +50,9 @@ pub struct Progress {
     pub written_bytes: u64,
     pub generation: u64,
     pub message: String,
+    /// milliseconds per keyframe so far, by step: decode (the frame), siglip (the three
+    /// members), owl, write (thumbnail JPEG, f16 blobs, the append); reading frames from the recording is the rest
+    pub step_ms: BTreeMap<String, f64>,
 }
 
 /// The keyframe times: the first color frame, then the first one at least `every` seconds after the last pick.
@@ -205,6 +208,7 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
     let mut embedded = 0u64;
     let mut in_batch = 0usize;
     let mut failure: Option<anyhow::Error> = None;
+    let mut steps: BTreeMap<String, f64> = BTreeMap::new();
     recording.raw_each_where(
         &setup.color.name,
         |ts| wanted.contains(&key(ts)),
@@ -216,9 +220,17 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
                 let Some(pose) = setup.tf.lookup(&setup.world_frame, &setup.color.frame_id, ts, 0.25) else {
                     return Ok(false);
                 };
+                let mut lap = Instant::now();
+                let mut spent = |step: &str| {
+                    *steps.entry(step.to_string()).or_insert(0.0) += lap.elapsed().as_secs_f64() * 1000.0;
+                    lap = Instant::now();
+                };
                 let rgb = decode_image(encoding, kind, payload)?.to_rgb()?;
+                spent("decode");
                 let grids = members.iter().map(|m| m.embed_grid(&rgb)).collect::<Result<Vec<_>>>()?;
+                spent("siglip");
                 let boxes = owl.features(&rgb)?;
+                spent("owl");
                 let thumb = crate::siglip::resize_rgb(&rgb, thumb_camera.width, thumb_camera.height);
                 let (translation, rotation) = tf::parts(&pose);
                 let shapes: BTreeMap<&str, [u32; 2]> = members.iter().zip(&grids).map(|(m, g)| (m.key.as_str(), [g.rows, g.cols])).collect();
@@ -234,6 +246,7 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
                     let header = json!({ "generation": generation, "rows": grid.rows, "cols": grid.cols, "dim": grid.dim, "dtype": "f16" });
                     writer.put(Stream::Patches(i), ts, blob::encode(&header, &blob::f16_bytes(&grid.data)));
                 }
+                spent("write");
                 Ok(true)
             })();
             match step {
@@ -254,9 +267,12 @@ pub fn generate(path: &Path, members: &[Member], owl: &Owl, options: &Options, r
                 }
             }
             if in_batch >= options.batch {
+                let flush_started = Instant::now();
                 writer.flush()?;
+                *steps.entry("write".into()).or_insert(0.0) += flush_started.elapsed().as_secs_f64() * 1000.0;
                 in_batch = 0;
             }
+            progress.step_ms = steps.iter().map(|(step, total)| (step.clone(), total / embedded.max(1) as f64)).collect();
             let elapsed = embed_started.elapsed().as_secs_f64();
             progress.elapsed_s = started.elapsed().as_secs_f64();
             progress.written_bytes = writer.written();

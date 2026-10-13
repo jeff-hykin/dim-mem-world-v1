@@ -72,8 +72,12 @@ fn provider(device: Device, path: &Path, fixed: &[(&str, i64)]) -> Option<Execut
         Device::Coreml => Some(
             CoreMLExecutionProvider::default()
                 .with_model_format(CoreMLModelFormat::MLProgram)
-                .with_compute_units(CoreMLComputeUnits::CPUAndGPU)
-                .with_model_cache_dir(path.with_extension(fixed.iter().fold("coreml".to_string(), |name, (dim, size)| format!("{name}.{dim}{size}"))).display())
+                .with_compute_units(match std::env::var("MEMWORLD_COREML_UNITS").as_deref() {
+                    Ok("all") => CoreMLComputeUnits::All,
+                    Ok("ane") => CoreMLComputeUnits::CPUAndNeuralEngine,
+                    _ => CoreMLComputeUnits::CPUAndGPU,
+                })
+                .with_model_cache_dir(path.with_extension(fixed.iter().fold(format!("coreml{}", std::env::var("MEMWORLD_COREML_UNITS").map(|units| format!("-{units}")).unwrap_or_default()), |name, (dim, size)| format!("{name}.{dim}{size}"))).display())
                 .build()
                 .error_on_failure(),
         ),
