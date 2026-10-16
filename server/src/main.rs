@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let desktop = dimos_app::get().cloned().unwrap_or_default();
     if args.agent_json {
-        println!("{}", serde_json::to_string_pretty(&api::routes().manifest(api::DESCRIPTION))?);
+        println!("{}", serde_json::to_string_pretty(&api::routes().manifest(api::WHEN, api::DESCRIPTION))?);
         return Ok(());
     }
     let data = desktop.data_dir.map(PathBuf::from).unwrap_or_else(|| dimos_home().join("data").join("apps").join("dim-mem-world"));

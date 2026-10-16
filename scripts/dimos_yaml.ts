@@ -18,6 +18,6 @@ caches:
     - url: https://dimos-desktop.cachix.org
       key: "dimos-desktop.cachix.org-1:A4P35aGJGmCan92LWyamtSFXMqaVE+VRFYnrJ8QMTeQ="
 `
-const provides = stringify({ provides: { private: ["api/cloud"], description: manifest.description, endpoints: manifest.endpoints } }, { indent: 4, lineWidth: 120 })
+const provides = stringify({ provides: { private: ["api/cloud"], when: manifest.when, description: manifest.description, endpoints: manifest.endpoints } }, { indent: 4, lineWidth: 120 })
 await Deno.writeTextFile(new URL("../dimos.yaml", import.meta.url), header + provides)
 console.log(`dimos.yaml: ${manifest.endpoints.length} endpoints`)

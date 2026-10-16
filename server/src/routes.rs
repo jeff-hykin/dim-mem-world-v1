@@ -60,6 +60,14 @@ impl<S: Clone + Send + Sync + 'static> Routes<S> {
         self
     }
 
+    /// When to use the endpoint just added: one line that reads after "If " (e.g. "you need to open a recording").
+    pub fn when(mut self, when: &str) -> Self {
+        if let Some(last) = self.endpoints.last_mut() {
+            last["when"] = json!(when);
+        }
+        self
+    }
+
     /// Routed but not an action (not in agent.json): the page's plumbing.
     pub fn plumbing<H, T>(mut self, method: &str, path: &str, handler: H) -> Self
     where
@@ -70,7 +78,7 @@ impl<S: Clone + Send + Sync + 'static> Routes<S> {
         self
     }
 
-    pub fn manifest(&self, description: &str) -> Value {
-        json!({ "description": description, "endpoints": self.endpoints })
+    pub fn manifest(&self, when: &str, description: &str) -> Value {
+        json!({ "when": when, "description": description, "endpoints": self.endpoints })
     }
 }

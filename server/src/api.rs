@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub const WHEN: &str = "you need to find, count or measure things a robot saw in a recording";
 pub const DESCRIPTION: &str = "Memory World: a robot recording's visual memory (three SigLIP2 models per image patch, stored INSIDE the recording) \
 and questions about it answered as places in 3D, with photo evidence. No API key: everything runs on local models. Coordinates are meters in the \
 recording's world frame (worldFrame: odom/map/world), +z up. Workflow: GET api/status (open recording, its memory, models, a running generation). \
@@ -85,25 +86,42 @@ pub fn routes() -> Routes<Arc<App>> {
     Routes::new()
         .endpoint("GET", "api/status", "Everything at a glance: the open recording, its compatibility check (what's missing, if anything), its memory (state none / partial / ready, keyframes), the models (downloaded? progress), the device they run on (cpu / coreml / cuda), the running or last generation, and whether the memory is loaded for questions.", json!({}), status)
         .role("context")
-        .endpoint("GET", "api/recordings", "The recordings in Desktop's recordings folder, each with its size, format and memory state (none / partial / ready).", json!({}), recordings)
-        .endpoint("GET", "api/recordings/{id}/check", "Whether a recording (id = its file name in the recordings folder) can be used: color images, the camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a raw lidar + IMU that lite_record's post_process gives poses to first); `missing` names each thing it lacks. Also its memory state.", json!({}), check_one)
-        .endpoint("POST", "api/open", "Open a recording (every open page switches to it): path = absolute path (Desktop's GET /recordings lists them) or a file name in the recordings folder. Checks it and loads its memory if it has one.", json!({ "path": required(s("the recording file (.db / .mcap)")) }), open)
+        .when("you need the current recording, memory, model or generation state")
+        .endpoint("GET", "api/recordings", "The recordings in Desktop's recordings folder, newest first. Returns { dir, recordings: [{ id (file name, for api/recordings/{id}/check and api/open), name, path, format (db / mcap), bytes, modified (unix seconds), memory (state none / partial / ready, or null if unreadable) }] }.", json!({}), recordings)
+        .when("you need to find which recordings exist and which have memory")
+        .endpoint("GET", "api/recordings/{id}/check", "Whether a recording (id = its file name in the recordings folder) can be used: color images, the camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a raw lidar + IMU that lite_record's post_process gives poses to first); `missing` names each thing it lacks. Also its memory state. 404 if no such recording.", json!({ "id": required(s("the recording's file name in the recordings folder (an id from GET api/recordings)")) }), check_one)
+        .when("you need to know whether a recording can be given a memory")
+        .endpoint("POST", "api/open", "Open a recording (every open page switches to it): path = absolute path (Desktop's GET /recordings lists them) or a file name in the recordings folder. Checks it and loads its memory (in the background) if it has one. Returns what GET api/status returns; 404 if the file doesn't exist, 409 while a generation is running.", json!({ "path": required(s("the recording file (.db / .mcap): an absolute path, or a file name in the recordings folder")) }), open)
+        .when("you need to open a recording to work on")
         .endpoint("GET", "api/models", "The model files (downloaded at run time, about 5.7 GB in all, 7.1 GB on a Mac with its CoreML copies): per file bytes done and state, overall progress, speed and ETA.", json!({}), models)
-        .endpoint("POST", "api/models/download", "Download the models that are missing (resumes partial files, checks each sha256). Runs in the background: poll GET api/models.", json!({}), download)
-        .endpoint("POST", "api/generate", "Build the open recording's memory IN PLACE (new streams inside the recording): the lidar's voxel map, and one keyframe per everySeconds, each embedded by three SigLIP2 models per patch plus OWLv2's image half, with its pose and a JPEG. Runs lite_record's post_process first on a raw lidar + IMU recording; downloads missing models first. Runs in the background (poll GET api/generate); a stopped generation resumes where it left off.", json!({ "everySeconds": n("one keyframe per this many seconds (default 1.0)") }), start_generate)
-        .endpoint("GET", "api/generate", "The running (or last) generation's progress: phase (models, post_process, planning, map, embedding, done, cancelled, failed), keyframes done / total, frames per second, ETA, bytes written into the recording.", json!({}), generate_progress)
-        .endpoint("POST", "api/generate/cancel", "Stop the running generation after the keyframe in hand (what's done stays; POST api/generate resumes).", json!({}), cancel)
-        .endpoint("DELETE", "api/memory", "Forget the open recording's memory (drops its tables from a .db; marks an .mcap's memory cleared). The recording's own data is untouched.", json!({}), forget)
+        .when("you need to know whether the models are downloaded")
+        .endpoint("POST", "api/models/download", "Download the models that are missing (resumes partial files, checks each sha256). Runs in the background; returns at once with what GET api/models returns, so poll that for progress.", json!({}), download)
+        .when("you need to download the models before generating")
+        .endpoint("POST", "api/generate", "Build the open recording's memory IN PLACE (new streams inside the recording): the lidar's voxel map, and one keyframe per everySeconds, each embedded by three SigLIP2 models per patch plus OWLv2's image half, with its pose and a JPEG. Runs lite_record's post_process first on a raw lidar + IMU recording; downloads missing models first. Runs in the background (poll GET api/generate); a stopped generation resumes where it left off. Returns what GET api/status returns; 404 with no open recording, 409 if one is already running.", json!({ "everySeconds": n("one keyframe per this many seconds, 0.05 to 60 (default 1.0)") }), start_generate)
+        .when("the open recording has no ready memory yet")
+        .endpoint("GET", "api/generate", "The running (or last) generation's progress: phase (models, post_process, planning, map, embedding, done, cancelled, failed), keyframes done / total, frames per second, ETA, bytes written into the recording. { phase: \"idle\" } when nothing has run since the app started.", json!({}), generate_progress)
+        .when("you need to check how a memory generation is going")
+        .endpoint("POST", "api/generate/cancel", "Stop the running generation after the keyframe in hand (what's done stays; POST api/generate resumes). Returns the generation's progress as GET api/generate does, or { phase: \"idle\" } if nothing was running.", json!({}), cancel)
+        .when("you need to stop a running memory generation")
+        .endpoint("DELETE", "api/memory", "Forget the open recording's memory (drops its tables from a .db; marks an .mcap's memory cleared). The recording's own data is untouched. Returns what GET api/status returns; 404 with no open recording, 409 while a generation is running (cancel it first).", json!({}), forget)
+        .when("you need to delete the open recording's memory")
         .endpoint("POST", "api/query", "Ask where something is: the keyframes where all three models agree go to OWLv2 for boxes, each box is placed in 3D from the lidar map drawn into that keyframe's camera, and sightings of one thing merge into a place (along their lines of sight). Returns count, places (center, size, heightM, sightings, best sighting), every sighting with its box and 3D extent, the candidate frames, timings and a one-line summary. The page shows the answer.", json!({ "text": required(s("what to look for, a short noun phrase")), "frames": int("at most this many keyframes (most agreed heat first) are scored by OWLv2 (default 200)"), "owlThreshold": n("OWLv2 box score cutoff (default 0.2)"), "placeRadiusM": n("sightings closer than this are one place (default 0.75)"), "agreementOnly": b("skip OWLv2; boxes are where the three models agree (default false)") }), ask)
-        .endpoint("GET", "api/count", "How many distinct things matching text were seen: the number of places, with each place's center, height and how many keyframes saw it.", text(), count)
-        .endpoint("GET", "api/dimensions", "How big each thing matching text is: per place its 3D center, size (x, y, z extents in meters), height (top minus bottom, meters) and bottom/top z.", text(), dimensions)
-        .endpoint("GET", "api/answer", "The last answer (what the page is showing), or null.", json!({}), last_answer)
+        .when("you need where something is, with every sighting and its boxes")
+        .endpoint("GET", "api/count", "How many distinct things matching text were seen. Returns { query, count, places: [{ id, center, heightM, sightings (keyframes that saw it) }], worldFrame, summary }. Reuses the last answer when text matches it, else asks POST api/query with its defaults.", text(), count)
+        .when("you need to know how many of something the robot saw")
+        .endpoint("GET", "api/dimensions", "How big each thing matching text is. Returns { query, places: [{ id, center, size (x, y, z extents in meters), heightM (top minus bottom), bottomZ, topZ, sightings }], worldFrame, summary }. Reuses the last answer when text matches it, else asks POST api/query with its defaults.", text(), dimensions)
+        .when("you need the size or height of things the robot saw")
+        .endpoint("GET", "api/answer", "The last answer (what the page is showing), in POST api/query's shape (query, count, places, every sighting, summary), or null if nothing has been asked since the recording was opened.", json!({}), last_answer)
         .role("view")
-        .endpoint("GET", "api/places/{id}/evidence", "A photo of a place: the keyframe of its best sighting as JPEG, the thing boxed. text = the question the place came from (asked again if it isn't the last answer).", json!({ "id": required(int("place id from the answer")), "text": required(s("the question")) }), evidence)
-        .endpoint("GET", "api/frames", "The memory's keyframes: index, time, camera position and rotation (world frame) — the camera's path.", json!({}), frames)
-        .endpoint("GET", "api/frames/{index}/image", "A keyframe's stored image (JPEG), with box=x0,y0,x1,y1 (pixels) outlined when given.", json!({ "index": required(int("keyframe index")), "box": s("x0,y0,x1,y1 in pixels") }), frame_image)
+        .when("you need the answer the page is currently showing")
+        .endpoint("GET", "api/places/{id}/evidence", "A photo of a place: the keyframe of its best sighting as JPEG, the thing boxed. text = the question the place came from (asked again if it isn't the last answer). 404 if the answer has no such place.", json!({ "id": required(int("place id, from an answer's places (POST api/query, GET api/count)")), "text": required(s("the question the place came from, e.g. \"traffic cone\"")) }), evidence)
+        .when("you need a photo proving where a found thing is")
+        .endpoint("GET", "api/frames", "The memory's keyframes, the camera's path. Returns { worldFrame, frames: [{ index, ts (seconds), position [x, y, z], rotation (quaternion x, y, z, w) }] }; 404 if the open recording has no memory yet.", json!({}), frames)
+        .when("you need the camera's path through the recording")
+        .endpoint("GET", "api/frames/{index}/image", "A keyframe's stored image as a JPEG, with box=x0,y0,x1,y1 (pixels) outlined when given (e.g. a sighting's box from POST api/query). 404 if there's no such keyframe.", json!({ "index": required(int("keyframe index, from GET api/frames or a sighting's frame")), "box": s("optional box to outline: x0,y0,x1,y1 in pixels") }), frame_image)
+        .when("you need to see what the camera saw at one keyframe")
         .plumbing("GET", "api/cloud", cloud)
-        .plumbing("GET", "agent.json", || async { Json(routes().manifest(DESCRIPTION)) })
+        .plumbing("GET", "agent.json", || async { Json(routes().manifest(WHEN, DESCRIPTION)) })
 }
 
 async fn status(State(app): State<Arc<App>>) -> Json<Value> {
@@ -320,10 +338,12 @@ mod tests {
     fn dimos_yaml_lists_exactly_the_served_endpoints() {
         let yaml: serde_yaml::Value = serde_yaml::from_str(include_str!("../../dimos.yaml")).unwrap();
         let listed: Value = serde_json::to_value(&yaml["provides"]["endpoints"]).unwrap();
-        let served = routes().manifest(DESCRIPTION)["endpoints"].clone();
+        let served = routes().manifest(WHEN, DESCRIPTION)["endpoints"].clone();
         assert_eq!(listed, served, "dimos.yaml is stale: cargo run -p dimos-app-server -- --agent-json | deno run -A scripts/dimos_yaml.ts");
         assert!(served.as_array().unwrap().len() >= 8);
         assert!(served.as_array().unwrap().iter().all(|e| e["description"].as_str().is_some_and(|d| d.len() > 30)));
+        assert!(served.as_array().unwrap().iter().all(|e| e["when"].as_str().is_some_and(|w| !w.is_empty())));
+        assert_eq!(yaml["provides"]["when"].as_str(), Some(WHEN));
     }
 
     async fn call(router: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
