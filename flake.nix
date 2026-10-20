@@ -5,11 +5,13 @@
         nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
         rust-overlay.url = "github:oxalica/rust-overlay";
         rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+        # deps build once into their own derivation (keyed on Cargo.toml / Cargo.lock), so a commit that only edits our code rebuilds just our crates
+        crane.url = "github:ipetkov/crane";
         # lite_record's post_process: poses for a raw lidar + IMU recording (run in place, as the Map Editor does)
         lite_record.url = "github:jeff-hykin/lite_record/461c194e5d804ba6012c58442b65b87494113e1b";
     };
 
-    outputs = { self, nixpkgs, rust-overlay, lite_record }:
+    outputs = { self, nixpkgs, rust-overlay, lite_record, crane }:
         let
             systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
             # unfree: only the CUDA libraries the x86_64 Linux build loads for Nvidia GPUs
@@ -44,7 +46,7 @@
             packages = forAllSystems (pkgs:
                 let
                     rust = pkgs.rust-bin.stable.latest.default;
-                    rustPlatform = pkgs.makeRustPlatform { cargo = rust; rustc = rust; };
+                    craneLib = (crane.mkLib pkgs).overrideToolchain (_: rust);
 
                     # the page: React + Vite (type-checked first), from package-lock.json
                     frontend = pkgs.buildNpmPackage {
@@ -60,7 +62,8 @@
                     };
 
                     # the backend: one Rust binary (recordings, generation, questions, downloads); no Python at runtime
-                    server = rustPlatform.buildRustPackage {
+                    # crane: buildDepsOnly compiles every dependency against a dummy of our crates (so its hash only moves with Cargo.toml / Cargo.lock), buildPackage starts from that target dir
+                    serverCommon = {
                         pname = "dim-mem-world-server";
                         version = "0.1.0";
                         # only what cargo reads, so a dimos.yaml or frontend change doesn't rebuild the server
@@ -68,11 +71,19 @@
                             root = ./.;
                             fileset = pkgs.lib.fileset.unions [ ./Cargo.toml ./Cargo.lock ./crates ./server ];
                         };
-                        cargoLock.lockFile = ./Cargo.lock;
-                        cargoBuildFlags = [ "-p" "dimos-app-server" ];
+                        cargoExtraArgs = "--locked -p dimos-app-server";
                         # the tests need the downloaded models; `cargo test` runs them in the dev shell
                         doCheck = false;
+                        strictDeps = true;
                     };
+                    server = craneLib.buildPackage (serverCommon // {
+                        cargoArtifacts = craneLib.buildDepsOnly (serverCommon // {
+                            # only the build's artifacts are reused; a `cargo check` pass would be a second compile nobody reads
+                            cargoCheckCommand = "true";
+                        });
+                        # nothing builds on this target dir, so don't archive it into $out
+                        doInstallCargoArtifacts = false;
+                    });
                 in {
                     inherit frontend server;
                     # what Desktop builds: bin/dimos-app-server, which serves everything under /apps/<name>/
@@ -81,10 +92,10 @@
                         makeWrapper ${server}/bin/dimos-app-server $out/bin/dimos-app-server \
                             --set-default MEMWORLD_FRONTEND ${frontend} \
                             --set-default ORT_DYLIB_PATH ${onnxLibrary pkgs} \
-                            --set-default LITE_RECORD_BIN ${lite_record.packages.${pkgs.system}.default}/bin/lite_record
+                            --set-default LITE_RECORD_BIN ${lite_record.packages.${pkgs.stdenv.hostPlatform.system}.default}/bin/lite_record
                         cp ${./icon.svg} $out/icon.svg
                     '';
-                    default = self.packages.${pkgs.system}.dimosApp;
+                    default = self.packages.${pkgs.stdenv.hostPlatform.system}.dimosApp;
                 });
 
             devShells = forAllSystems (pkgs: {
