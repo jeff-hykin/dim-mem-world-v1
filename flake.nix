@@ -53,7 +53,7 @@
                         pname = "dim-mem-world-frontend";
                         version = "0.1.0";
                         src = ./frontend;
-                        npmDepsHash = "sha256-GAZg3yKIGlwnJzj/PS9XyjBtOeTaI9SBNmvdbBcFnpY=";
+                        npmDepsHash = "sha256-UQsIg1kJ6OYHMaOwquVdzByDaW+rxjWf7DnestafMHQ=";
                         # npm unpacks the dimos-react git dependency through its cache
                         makeCacheWritable = true;
                         installPhase = ''
