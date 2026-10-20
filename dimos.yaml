@@ -11,215 +11,245 @@ caches:
     - url: https://dimos-desktop.cachix.org
       key: "dimos-desktop.cachix.org-1:A4P35aGJGmCan92LWyamtSFXMqaVE+VRFYnrJ8QMTeQ="
 provides:
-    private:
+    openapi: 3.1.0
+    info:
+        title: Memory World
+        version: 1.0.0
+        description: >-
+            Memory World: a robot recording's visual memory (three SigLIP2 models per image patch, stored INSIDE the
+            recording) and questions about it answered as places in 3D, with photo evidence. No API key: everything runs
+            on local models. Coordinates are meters in the recording's world frame (worldFrame: odom/map/world), +z up.
+            Workflow: GET api/status (open recording, its memory, models, a running generation). If no recording is
+            open, GET api/recordings then POST api/open {path}. If memory.state isn't "ready", POST api/generate
+            (downloads the models first if needed; poll GET api/generate). Then ask: GET api/count?text=traffic cone
+            (how many distinct places), GET api/dimensions?text=... (each place's size and height), or POST api/query
+            {text} for everything (places, every sighting with its box, timings). Show the user the evidence: GET
+            api/places/{id}/evidence?text=... is a boxed photo. Use short noun phrases as text ("traffic cone", "fire
+            extinguisher"); a place is one physical thing seen from one or more keyframes.
+        x-when: 'you need to find, count or measure things a robot saw in a recording'
+    x-private:
         - api/cloud
-    when: 'you need to find, count or measure things a robot saw in a recording'
-    description: >-
-        Memory World: a robot recording's visual memory (three SigLIP2 models per image patch, stored INSIDE the
-        recording) and questions about it answered as places in 3D, with photo evidence. No API key: everything runs on
-        local models. Coordinates are meters in the recording's world frame (worldFrame: odom/map/world), +z up.
-        Workflow: GET api/status (open recording, its memory, models, a running generation). If no recording is open,
-        GET api/recordings then POST api/open {path}. If memory.state isn't "ready", POST api/generate (downloads the
-        models first if needed; poll GET api/generate). Then ask: GET api/count?text=traffic cone (how many distinct
-        places), GET api/dimensions?text=... (each place's size and height), or POST api/query {text} for everything
-        (places, every sighting with its box, timings). Show the user the evidence: GET
-        api/places/{id}/evidence?text=... is a boxed photo. Use short noun phrases as text ("traffic cone", "fire
-        extinguisher"); a place is one physical thing seen from one or more keyframes.
-    endpoints:
-        -
-            when: 'you need the current recording, memory, model or generation state'
-            description: >-
-                Everything at a glance: the open recording, its compatibility check (what's missing, if anything), its
-                memory (state none / partial / ready, keyframes), the models (downloaded? progress), the device they run
-                on (cpu / coreml / cuda), the running or last generation, and whether the memory is loaded for
-                questions.
-            method: GET
-            path: api/status
-            role: context
-        -
-            when: you need to find which recordings exist and which have memory
-            description: >-
-                The recordings in Desktop's recordings folder, newest first. Returns { dir, recordings: [{ id (file
-                name, for api/recordings/{id}/check and api/open), name, path, format (db / mcap), bytes, modified (unix
-                seconds), memory (state none / partial / ready, or null if unreadable) }] }.
-            method: GET
-            path: api/recordings
-        -
-            when: you need to know whether a recording can be given a memory
-            description: >-
-                Whether a recording (id = its file name in the recordings folder) can be used: color images, the
-                camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a raw lidar + IMU that
-                lite_record's post_process gives poses to first); `missing` names each thing it lacks. Also its memory
-                state. 404 if no such recording.
-            method: GET
-            params:
-                id:
-                    description: the recording's file name in the recordings folder (an id from GET api/recordings)
-                    required: true
-                    type: string
-            path: 'api/recordings/{id}/check'
-        -
-            when: you need to open a recording to work on
-            description: >-
-                Open a recording (every open page switches to it): path = absolute path (Desktop's GET /recordings lists
-                them) or a file name in the recordings folder. Checks it and loads its memory (in the background) if it
-                has one. Returns what GET api/status returns; 404 if the file doesn't exist, 409 while a generation is
-                running.
-            method: POST
-            params:
-                path:
-                    description: 'the recording file (.db / .mcap): an absolute path, or a file name in the recordings folder'
-                    required: true
-                    type: string
-            path: api/open
-        -
-            when: you need to know whether the models are downloaded
-            description: >-
-                The model files (downloaded at run time, about 5.7 GB in all, 7.1 GB on a Mac with its CoreML copies):
-                per file bytes done and state, overall progress, speed and ETA.
-            method: GET
-            path: api/models
-        -
-            when: you need to download the models before generating
-            description: >-
-                Download the models that are missing (resumes partial files, checks each sha256). Runs in the
-                background; returns at once with what GET api/models returns, so poll that for progress.
-            method: POST
-            path: api/models/download
-        -
-            when: the open recording has no ready memory yet
-            description: >-
-                Build the open recording's memory IN PLACE (new streams inside the recording): the lidar's voxel map,
-                and one keyframe per everySeconds, each embedded by three SigLIP2 models per patch plus OWLv2's image
-                half, with its pose and a JPEG. Runs lite_record's post_process first on a raw lidar + IMU recording;
-                downloads missing models first. Runs in the background (poll GET api/generate); a stopped generation
-                resumes where it left off. Returns what GET api/status returns; 404 with no open recording, 409 if one
-                is already running.
-            method: POST
-            params:
-                everySeconds:
-                    description: 'one keyframe per this many seconds, 0.05 to 60 (default 1.0)'
-                    type: number
-            path: api/generate
-        -
-            when: you need to check how a memory generation is going
-            description: >-
-                The running (or last) generation's progress: phase (models, post_process, planning, map, embedding,
-                done, cancelled, failed), keyframes done / total, frames per second, ETA, bytes written into the
-                recording. { phase: "idle" } when nothing has run since the app started.
-            method: GET
-            path: api/generate
-        -
-            when: you need to stop a running memory generation
-            description: >-
-                Stop the running generation after the keyframe in hand (what's done stays; POST api/generate resumes).
-                Returns the generation's progress as GET api/generate does, or { phase: "idle" } if nothing was running.
-            method: POST
-            path: api/generate/cancel
-        -
-            when: you need to delete the open recording's memory
-            description: >-
-                Forget the open recording's memory (drops its tables from a .db; marks an .mcap's memory cleared). The
-                recording's own data is untouched. Returns what GET api/status returns; 404 with no open recording, 409
-                while a generation is running (cancel it first).
-            method: DELETE
-            path: api/memory
-        -
-            when: 'you need where something is, with every sighting and its boxes'
-            description: >-
-                Ask where something is: the keyframes where all three models agree go to OWLv2 for boxes, each box is
-                placed in 3D from the lidar map drawn into that keyframe's camera, and sightings of one thing merge into
-                a place (along their lines of sight). Returns count, places (center, size, heightM, sightings, best
-                sighting), every sighting with its box and 3D extent, the candidate frames, timings and a one-line
-                summary. The page shows the answer.
-            method: POST
-            params:
-                agreementOnly:
-                    description: skip OWLv2; boxes are where the three models agree (default false)
-                    type: boolean
-                frames:
-                    description: at most this many keyframes (most agreed heat first) are scored by OWLv2 (default 200)
-                    type: integer
-                owlThreshold:
-                    description: OWLv2 box score cutoff (default 0.2)
-                    type: number
-                placeRadiusM:
-                    description: sightings closer than this are one place (default 0.75)
-                    type: number
-                text:
-                    description: 'what to look for, a short noun phrase'
-                    required: true
-                    type: string
-            path: api/query
-        -
-            when: you need to know how many of something the robot saw
-            description: >-
-                How many distinct things matching text were seen. Returns { query, count, places: [{ id, center,
-                heightM, sightings (keyframes that saw it) }], worldFrame, summary }. Reuses the last answer when text
-                matches it, else asks POST api/query with its defaults.
-            method: GET
-            params:
-                text:
-                    description: 'what to look for, a short noun phrase (e.g. "traffic cone")'
-                    required: true
-                    type: string
-            path: api/count
-        -
-            when: you need the size or height of things the robot saw
-            description: >-
-                How big each thing matching text is. Returns { query, places: [{ id, center, size (x, y, z extents in
-                meters), heightM (top minus bottom), bottomZ, topZ, sightings }], worldFrame, summary }. Reuses the last
-                answer when text matches it, else asks POST api/query with its defaults.
-            method: GET
-            params:
-                text:
-                    description: 'what to look for, a short noun phrase (e.g. "traffic cone")'
-                    required: true
-                    type: string
-            path: api/dimensions
-        -
-            when: you need the answer the page is currently showing
-            description: >-
-                The last answer (what the page is showing), in POST api/query's shape (query, count, places, every
-                sighting, summary), or null if nothing has been asked since the recording was opened.
-            method: GET
-            path: api/answer
-            role: view
-        -
-            when: you need a photo proving where a found thing is
-            description: >-
-                A photo of a place: the keyframe of its best sighting as JPEG, the thing boxed. text = the question the
-                place came from (asked again if it isn't the last answer). 404 if the answer has no such place.
-            method: GET
-            params:
-                id:
-                    description: 'place id, from an answer''s places (POST api/query, GET api/count)'
-                    required: true
-                    type: integer
-                text:
-                    description: 'the question the place came from, e.g. "traffic cone"'
-                    required: true
-                    type: string
-            path: 'api/places/{id}/evidence'
-        -
-            when: you need the camera's path through the recording
-            description: >-
-                The memory's keyframes, the camera's path. Returns { worldFrame, frames: [{ index, ts (seconds),
-                position [x, y, z], rotation (quaternion x, y, z, w) }] }; 404 if the open recording has no memory yet.
-            method: GET
-            path: api/frames
-        -
-            when: you need to see what the camera saw at one keyframe
-            description: >-
-                A keyframe's stored image as a JPEG, with box=x0,y0,x1,y1 (pixels) outlined when given (e.g. a
-                sighting's box from POST api/query). 404 if there's no such keyframe.
-            method: GET
-            params:
-                box:
-                    description: 'optional box to outline: x0,y0,x1,y1 in pixels'
-                    type: string
-                index:
-                    description: 'keyframe index, from GET api/frames or a sighting''s frame'
-                    required: true
-                    type: integer
-            path: 'api/frames/{index}/image'
+    paths:
+        /api/status:
+            get:
+                description: >-
+                    Everything at a glance: the open recording, its compatibility check (what's missing, if anything),
+                    its memory (state none / partial / ready, keyframes), the models (downloaded? progress), the device
+                    they run on (cpu / coreml / cuda), the running or last generation, and whether the memory is loaded
+                    for questions.
+                x-when: 'you need the current recording, memory, model or generation state'
+                x-dimos-role: context
+        /api/recordings:
+            get:
+                description: >-
+                    The recordings in Desktop's recordings folder, newest first. Returns { dir, recordings: [{ id (file
+                    name, for api/recordings/{id}/check and api/open), name, path, format (db / mcap), bytes, modified
+                    (unix seconds), memory (state none / partial / ready, or null if unreadable) }] }.
+                x-when: you need to find which recordings exist and which have memory
+        '/api/recordings/{id}/check':
+            get:
+                description: >-
+                    Whether a recording (id = its file name in the recordings folder) can be used: color images, the
+                    camera's intrinsics, a lidar, and poses (tf to the camera and the lidar, or a raw lidar + IMU that
+                    lite_record's post_process gives poses to first); `missing` names each thing it lacks. Also its
+                    memory state. 404 if no such recording.
+                x-when: you need to know whether a recording can be given a memory
+                parameters:
+                    -
+                        name: id
+                        in: path
+                        required: true
+                        schema:
+                            type: string
+                        description: the recording's file name in the recordings folder (an id from GET api/recordings)
+        /api/open:
+            post:
+                description: >-
+                    Open a recording (every open page switches to it): path = absolute path (Desktop's GET /recordings
+                    lists them) or a file name in the recordings folder. Checks it and loads its memory (in the
+                    background) if it has one. Returns what GET api/status returns; 404 if the file doesn't exist, 409
+                    while a generation is running.
+                x-when: you need to open a recording to work on
+                requestBody:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    path:
+                                        description: >-
+                                            the recording file (.db / .mcap): an absolute path, or a file name in the
+                                            recordings folder
+                                        type: string
+                                required:
+                                    - path
+                                type: object
+        /api/models:
+            get:
+                description: >-
+                    The model files (downloaded at run time, about 5.7 GB in all, 7.1 GB on a Mac with its CoreML
+                    copies): per file bytes done and state, overall progress, speed and ETA.
+                x-when: you need to know whether the models are downloaded
+        /api/models/download:
+            post:
+                description: >-
+                    Download the models that are missing (resumes partial files, checks each sha256). Runs in the
+                    background; returns at once with what GET api/models returns, so poll that for progress.
+                x-when: you need to download the models before generating
+        /api/generate:
+            get:
+                description: >-
+                    The running (or last) generation's progress: phase (models, post_process, planning, map, embedding,
+                    done, cancelled, failed), keyframes done / total, frames per second, ETA, bytes written into the
+                    recording. { phase: "idle" } when nothing has run since the app started.
+                x-when: you need to check how a memory generation is going
+            post:
+                description: >-
+                    Build the open recording's memory IN PLACE (new streams inside the recording): the lidar's voxel
+                    map, and one keyframe per everySeconds, each embedded by three SigLIP2 models per patch plus OWLv2's
+                    image half, with its pose and a JPEG. Runs lite_record's post_process first on a raw lidar + IMU
+                    recording; downloads missing models first. Runs in the background (poll GET api/generate); a stopped
+                    generation resumes where it left off. Returns what GET api/status returns; 404 with no open
+                    recording, 409 if one is already running.
+                x-when: the open recording has no ready memory yet
+                requestBody:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    everySeconds:
+                                        description: 'one keyframe per this many seconds, 0.05 to 60 (default 1.0)'
+                                        type: number
+                                type: object
+        /api/generate/cancel:
+            post:
+                description: >-
+                    Stop the running generation after the keyframe in hand (what's done stays; POST api/generate
+                    resumes). Returns the generation's progress as GET api/generate does, or { phase: "idle" } if
+                    nothing was running.
+                x-when: you need to stop a running memory generation
+        /api/memory:
+            delete:
+                description: >-
+                    Forget the open recording's memory (drops its tables from a .db; marks an .mcap's memory cleared).
+                    The recording's own data is untouched. Returns what GET api/status returns; 404 with no open
+                    recording, 409 while a generation is running (cancel it first).
+                x-when: you need to delete the open recording's memory
+        /api/query:
+            post:
+                description: >-
+                    Ask where something is: the keyframes where all three models agree go to OWLv2 for boxes, each box
+                    is placed in 3D from the lidar map drawn into that keyframe's camera, and sightings of one thing
+                    merge into a place (along their lines of sight). Returns count, places (center, size, heightM,
+                    sightings, best sighting), every sighting with its box and 3D extent, the candidate frames, timings
+                    and a one-line summary. The page shows the answer.
+                x-when: 'you need where something is, with every sighting and its boxes'
+                requestBody:
+                    content:
+                        application/json:
+                            schema:
+                                properties:
+                                    agreementOnly:
+                                        description: skip OWLv2; boxes are where the three models agree (default false)
+                                        type: boolean
+                                    frames:
+                                        description: >-
+                                            at most this many keyframes (most agreed heat first) are scored by OWLv2
+                                            (default 200)
+                                        type: integer
+                                    owlThreshold:
+                                        description: OWLv2 box score cutoff (default 0.2)
+                                        type: number
+                                    placeRadiusM:
+                                        description: sightings closer than this are one place (default 0.75)
+                                        type: number
+                                    text:
+                                        description: 'what to look for, a short noun phrase'
+                                        type: string
+                                required:
+                                    - text
+                                type: object
+        /api/count:
+            get:
+                description: >-
+                    How many distinct things matching text were seen. Returns { query, count, places: [{ id, center,
+                    heightM, sightings (keyframes that saw it) }], worldFrame, summary }. Reuses the last answer when
+                    text matches it, else asks POST api/query with its defaults.
+                x-when: you need to know how many of something the robot saw
+                parameters:
+                    -
+                        name: text
+                        in: query
+                        required: true
+                        schema:
+                            type: string
+                        description: 'what to look for, a short noun phrase (e.g. "traffic cone")'
+        /api/dimensions:
+            get:
+                description: >-
+                    How big each thing matching text is. Returns { query, places: [{ id, center, size (x, y, z extents
+                    in meters), heightM (top minus bottom), bottomZ, topZ, sightings }], worldFrame, summary }. Reuses
+                    the last answer when text matches it, else asks POST api/query with its defaults.
+                x-when: you need the size or height of things the robot saw
+                parameters:
+                    -
+                        name: text
+                        in: query
+                        required: true
+                        schema:
+                            type: string
+                        description: 'what to look for, a short noun phrase (e.g. "traffic cone")'
+        /api/answer:
+            get:
+                description: >-
+                    The last answer (what the page is showing), in POST api/query's shape (query, count, places, every
+                    sighting, summary), or null if nothing has been asked since the recording was opened.
+                x-when: you need the answer the page is currently showing
+                x-dimos-role: view
+        '/api/places/{id}/evidence':
+            get:
+                description: >-
+                    A photo of a place: the keyframe of its best sighting as JPEG, the thing boxed. text = the question
+                    the place came from (asked again if it isn't the last answer). 404 if the answer has no such place.
+                x-when: you need a photo proving where a found thing is
+                parameters:
+                    -
+                        name: id
+                        in: path
+                        required: true
+                        schema:
+                            type: integer
+                        description: 'place id, from an answer''s places (POST api/query, GET api/count)'
+                    -
+                        name: text
+                        in: query
+                        required: true
+                        schema:
+                            type: string
+                        description: 'the question the place came from, e.g. "traffic cone"'
+        /api/frames:
+            get:
+                description: >-
+                    The memory's keyframes, the camera's path. Returns { worldFrame, frames: [{ index, ts (seconds),
+                    position [x, y, z], rotation (quaternion x, y, z, w) }] }; 404 if the open recording has no memory
+                    yet.
+                x-when: you need the camera's path through the recording
+        '/api/frames/{index}/image':
+            get:
+                description: >-
+                    A keyframe's stored image as a JPEG, with box=x0,y0,x1,y1 (pixels) outlined when given (e.g. a
+                    sighting's box from POST api/query). 404 if there's no such keyframe.
+                x-when: you need to see what the camera saw at one keyframe
+                parameters:
+                    -
+                        name: index
+                        in: path
+                        required: true
+                        schema:
+                            type: integer
+                        description: 'keyframe index, from GET api/frames or a sighting''s frame'
+                    -
+                        name: box
+                        in: query
+                        schema:
+                            type: string
+                        description: 'optional box to outline: x0,y0,x1,y1 in pixels'

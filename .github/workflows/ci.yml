@@ -20,5 +20,5 @@ jobs:
                   name: dimos-desktop
                   authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
             - run: nix build .#dimosApp -L
-            # dimos.yaml lists exactly what the built server serves at agent.json
-            - run: result/bin/dimos-app-server --agent-json > /dev/null
+            # dimos.yaml provides: is what the built server serves at openapi.json (the server prints it)
+            - run: result/bin/dimos-app-server --openapi-json > /dev/null

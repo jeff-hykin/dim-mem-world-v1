@@ -1,5 +1,5 @@
 //! Every Memory World action as an HTTP endpoint (routes.rs): the page calls these, Desktop's agent calls the same ones
-//! (served as agent.json, repeated in dimos.yaml). Errors are `{ "error": "..." }`. docs/api.md has the types.
+//! (served as openapi.json, repeated in dimos.yaml). Errors are `{ "error": "..." }`. docs/api.md has the types.
 use crate::app::App;
 use crate::render;
 use crate::routes::Routes;
@@ -14,6 +14,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub const TITLE: &str = "Memory World";
+/// the endpoints' API version (openapi.json's info.version): major = breaking, minor = added
+pub const API_VERSION: &str = "1.0.0";
 pub const WHEN: &str = "you need to find, count or measure things a robot saw in a recording";
 pub const DESCRIPTION: &str = "Memory World: a robot recording's visual memory (three SigLIP2 models per image patch, stored INSIDE the recording) \
 and questions about it answered as places in 3D, with photo evidence. No API key: everything runs on local models. Coordinates are meters in the \
@@ -121,7 +124,12 @@ pub fn routes() -> Routes<Arc<App>> {
         .endpoint("GET", "api/frames/{index}/image", "A keyframe's stored image as a JPEG, with box=x0,y0,x1,y1 (pixels) outlined when given (e.g. a sighting's box from POST api/query). 404 if there's no such keyframe.", json!({ "index": required(int("keyframe index, from GET api/frames or a sighting's frame")), "box": s("optional box to outline: x0,y0,x1,y1 in pixels") }), frame_image)
         .when("you need to see what the camera saw at one keyframe")
         .plumbing("GET", "api/cloud", cloud)
-        .plumbing("GET", "agent.json", || async { Json(routes().manifest(WHEN, DESCRIPTION)) })
+        .plumbing("GET", "openapi.json", || async { Json(openapi()) })
+}
+
+/// The endpoints as an OpenAPI 3.1 document: the served openapi.json, and dimos.yaml's `provides:`.
+pub fn openapi() -> Value {
+    routes().openapi(TITLE, API_VERSION, WHEN, DESCRIPTION)
 }
 
 async fn status(State(app): State<Arc<App>>) -> Json<Value> {
@@ -335,15 +343,16 @@ mod tests {
     use tower::ServiceExt;
 
     #[test]
-    fn dimos_yaml_lists_exactly_the_served_endpoints() {
+    fn dimos_yaml_provides_exactly_the_served_openapi() {
         let yaml: serde_yaml::Value = serde_yaml::from_str(include_str!("../../dimos.yaml")).unwrap();
-        let listed: Value = serde_json::to_value(&yaml["provides"]["endpoints"]).unwrap();
-        let served = routes().manifest(WHEN, DESCRIPTION)["endpoints"].clone();
-        assert_eq!(listed, served, "dimos.yaml is stale: cargo run -p dimos-app-server -- --agent-json | deno run -A scripts/dimos_yaml.ts");
-        assert!(served.as_array().unwrap().len() >= 8);
-        assert!(served.as_array().unwrap().iter().all(|e| e["description"].as_str().is_some_and(|d| d.len() > 30)));
-        assert!(served.as_array().unwrap().iter().all(|e| e["when"].as_str().is_some_and(|w| !w.is_empty())));
-        assert_eq!(yaml["provides"]["when"].as_str(), Some(WHEN));
+        let mut listed: Value = serde_json::to_value(&yaml["provides"]).unwrap();
+        listed.as_object_mut().unwrap().remove("x-private");
+        assert_eq!(listed, openapi(), "dimos.yaml is stale: cargo run -p dimos-app-server -- --openapi-json | deno run -A scripts/dimos_yaml.ts");
+        let table = routes().endpoints;
+        assert!(table.len() >= 8);
+        assert!(table.iter().all(|e| e["description"].as_str().is_some_and(|d| d.len() > 30)));
+        assert!(table.iter().all(|e| e["when"].as_str().is_some_and(|w| !w.is_empty())));
+        assert_eq!(yaml["provides"]["info"]["x-when"].as_str(), Some(WHEN));
     }
 
     async fn call(router: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -373,8 +382,8 @@ mod tests {
         assert!(body["error"].as_str().unwrap().contains("text is required"));
         let (status, _) = call(&router, "POST", "/api/open", Some(json!({ "path": "/nope/none.db" }))).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, body) = call(&router, "GET", "/agent.json", None).await;
+        let (status, body) = call(&router, "GET", "/openapi.json", None).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(body["description"].as_str().unwrap().contains("api/count"));
+        assert!(body["info"]["description"].as_str().unwrap().contains("api/count"));
     }
 }

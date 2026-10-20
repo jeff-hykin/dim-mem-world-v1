@@ -1,7 +1,7 @@
 # Memory World API
 
 Everything the page does is one of these endpoints, and Desktop's agent (dimcode) calls the same ones (they're listed in
-`dimos.yaml` `provides.endpoints` and served as `agent.json`). Paths are relative to the app (`/apps/<name>/`). JSON in
+`dimos.yaml` `provides.paths`, an OpenAPI 3.1 document, and served as `openapi.json`). Paths are relative to the app (`/apps/<name>/`). JSON in
 and out; errors are `{ "error": "..." }` with a 4xx/5xx status. No API key anywhere: questions run on local models.
 
 Coordinates are meters in the recording's world frame (`worldFrame`: `odom`, `map` or `world`), +z up.

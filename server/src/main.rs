@@ -1,5 +1,5 @@
 //! Memory World's `dimos-app-server` (dimOS Desktop app contract: docs/apps.md in dimos-desktop): serves the built page
-//! and every action as an HTTP endpoint (api.rs), listed in agent.json for Desktop's agent. One compiled binary; the
+//! and every action as an HTTP endpoint (api.rs), listed in openapi.json for Desktop's agent. One compiled binary; the
 //! models are downloaded at run time and run on ONNX Runtime (no Python, no API key).
 //!
 //! The same binary answers from a terminal: `--check <rec>`, `--generate <rec>`, `--ask <rec> <text>`, `--forget <rec>`.
@@ -24,9 +24,9 @@ pub struct Args {
     /// the built page (vite's dist); the nix wrapper sets it
     #[arg(long, env = "MEMWORLD_FRONTEND")]
     frontend: Option<PathBuf>,
-    /// print the endpoints (agent.json) and exit
+    /// print the endpoints (openapi.json) and exit
     #[arg(long)]
-    agent_json: bool,
+    openapi_json: bool,
     /// print a recording's compatibility check and memory state, then exit
     #[arg(long, value_name = "RECORDING")]
     check: Option<PathBuf>,
@@ -52,8 +52,8 @@ fn dimos_home() -> PathBuf {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let desktop = dimos_app::get().cloned().unwrap_or_default();
-    if args.agent_json {
-        println!("{}", serde_json::to_string_pretty(&api::routes().manifest(api::WHEN, api::DESCRIPTION))?);
+    if args.openapi_json {
+        println!("{}", serde_json::to_string_pretty(&api::openapi())?);
         return Ok(());
     }
     let data = desktop.data_dir.map(PathBuf::from).unwrap_or_else(|| dimos_home().join("data").join("apps").join("dim-mem-world"));

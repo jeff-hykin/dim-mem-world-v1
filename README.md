@@ -57,4 +57,4 @@ nix build .#dimosApp          # what Desktop builds
 ```
 
 After changing an endpoint, regenerate the manifest (a test fails until you do):
-`cargo run -p dimos-app-server -- --agent-json | deno run -A scripts/dimos_yaml.ts`.
+`cargo run -p dimos-app-server -- --openapi-json | deno run -A scripts/dimos_yaml.ts`.
