@@ -1,8 +1,8 @@
 // Dev-only mock of Desktop (/recordings) and this app's API (/apps/dim-mem-world/api/*), per docs/api.md, so the page
 // can be seen without the Rust backend. Not shipped.
 //
-//     node dev/mock_server.mjs            # :7099
-//     DESKTOP_URL=http://127.0.0.1:7099 npx vite
+//     deno run -A dev/mock_server.mjs     # :7099
+//     DESKTOP_URL=http://127.0.0.1:7099 deno task dev
 //
 // MOCK_STATE=pick|incompatible|models|generating|ready picks where it starts (default ready). Generating and model
 // downloads advance in real time.

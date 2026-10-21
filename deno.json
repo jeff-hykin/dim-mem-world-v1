@@ -1,0 +1,5 @@
+{
+    "tasks": {
+        "update-hashes": "deno run -A scripts/update_hashes.ts"
+    }
+}

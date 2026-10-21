@@ -3,6 +3,8 @@
 
     inputs = {
         nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+        # the page's deno: nixos-25.11's 2.6.10, the version dimos pins (unstable's newer deno refuses packages younger than a day)
+        nixpkgs-deno.url = "github:NixOS/nixpkgs/nixos-25.11";
         rust-overlay.url = "github:oxalica/rust-overlay";
         rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
         # deps build once into their own derivation (keyed on Cargo.toml / Cargo.lock), so a commit that only edits our code rebuilds just our crates
@@ -11,7 +13,7 @@
         lite_record.url = "github:jeff-hykin/lite_record/461c194e5d804ba6012c58442b65b87494113e1b";
     };
 
-    outputs = { self, nixpkgs, rust-overlay, lite_record, crane }:
+    outputs = { self, nixpkgs, nixpkgs-deno, rust-overlay, lite_record, crane }:
         let
             systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
             # unfree: only the CUDA libraries the x86_64 Linux build loads for Nvidia GPUs
@@ -48,17 +50,68 @@
                     rust = pkgs.rust-bin.stable.latest.default;
                     craneLib = (crane.mkLib pkgs).overrideToolchain (_: rust);
 
-                    # the page: React + Vite (type-checked first), from package-lock.json
-                    frontend = pkgs.buildNpmPackage {
-                        pname = "dim-mem-world-frontend";
-                        version = "0.1.0";
-                        src = ./frontend;
-                        npmDepsHash = "sha256-UQsIg1kJ6OYHMaOwquVdzByDaW+rxjWf7DnestafMHQ=";
-                        # npm unpacks the dimos-react git dependency through its cache
-                        makeCacheWritable = true;
-                        installPhase = ''
-                            cp -r dist $out
+                    deno = nixpkgs-deno.legacyPackages.${pkgs.stdenv.hostPlatform.system}.deno;
+                    denoEnv = "export HOME=$TMPDIR DENO_DIR=$TMPDIR/deno DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1";
+                    frontendFiles = paths: pkgs.lib.fileset.toSource { root = ./frontend; fileset = pkgs.lib.fileset.unions paths; };
+                    # `deno install --frozen` (deno.lock pins every package) with network, so fixed-output. Its hash is per
+                    # build machine (vite's native rollup and esbuild differ by OS and CPU): `deno task update-hashes` refreshes
+                    # this machine's after frontend/deno.json or deno.lock change.
+                    frontendModules = pkgs.stdenvNoCC.mkDerivation {
+                        name = "dim-mem-world-frontend-modules";
+                        src = frontendFiles [ ./frontend/deno.json ./frontend/deno.lock ];
+                        nativeBuildInputs = [ deno ];
+                        buildPhase = ''
+                            ${denoEnv}
+                            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+                            deno install --frozen
+                            # deno's own record of the install: not needed, and not byte-identical between installs
+                            rm -f node_modules/.deno/.setup-cache.bin
                         '';
+                        installPhase = "cp -R node_modules $out";
+                        dontFixup = true;
+                        outputHashMode = "recursive";
+                        outputHashAlgo = "sha256";
+                        outputHash = {
+                            aarch64-darwin = "sha256-oO+P8sfp+UkDIpcmAzY4FqTDhNeop0Y4AHHbxGjwf+Q=";
+                            x86_64-darwin = "";
+                            x86_64-linux = "sha256-UHGas9HqIgcuMMgGITTDW7mGb93EZH7dw7TW0SpmCJw=";
+                            aarch64-linux = "";
+                        }.${pkgs.stdenv.hostPlatform.system};
+                    };
+
+                    pageFiles = frontendFiles [ ./frontend/deno.json ./frontend/deno.lock ./frontend/tsconfig.json ./frontend/index.html ./frontend/vite.config.ts ./frontend/tools ./frontend/src ./frontend/public ];
+                    # dimos-react as esm.sh builds its tag (frontend/tools/esm_fetch.ts): a vite build with network that
+                    # keeps only what it fetched, so fixed-output; the same on every system. `deno task update-hashes` refreshes it.
+                    frontendEsm = pkgs.stdenvNoCC.mkDerivation {
+                        name = "dim-mem-world-frontend-esm";
+                        src = pageFiles;
+                        nativeBuildInputs = [ deno ];
+                        buildPhase = ''
+                            ${denoEnv}
+                            export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+                            cp -R ${frontendModules} node_modules
+                            chmod -R u+w node_modules
+                            ESM_CACHE=$TMPDIR/esm deno run -A --cached-only --node-modules-dir=manual npm:vite build --logLevel warn
+                        '';
+                        installPhase = "cp -R $TMPDIR/esm $out";
+                        dontFixup = true;
+                        outputHashMode = "recursive";
+                        outputHashAlgo = "sha256";
+                        outputHash = "sha256-YzmFYPT9K/klsDkks1C/t+xpXsB78sqfd/6s2G+dDi4=";
+                    };
+
+                    # the page: React + Vite against those modules and that esm.sh cache, offline
+                    frontend = pkgs.stdenvNoCC.mkDerivation {
+                        name = "dim-mem-world-frontend";
+                        src = pageFiles;
+                        nativeBuildInputs = [ deno ];
+                        buildPhase = ''
+                            ${denoEnv}
+                            cp -R ${frontendModules} node_modules
+                            chmod -R u+w node_modules
+                            ESM_CACHE=${frontendEsm} ESM_OFFLINE=1 deno run -A --cached-only --node-modules-dir=manual npm:vite build
+                        '';
+                        installPhase = "cp -R dist $out";
                     };
 
                     # the backend: one Rust binary (recordings, generation, questions, downloads); no Python at runtime
@@ -85,7 +138,7 @@
                         doInstallCargoArtifacts = false;
                     });
                 in {
-                    inherit frontend server;
+                    inherit frontend frontendModules frontendEsm server;
                     # what Desktop builds: bin/dimos-app-server, which serves everything under /apps/<name>/
                     dimosApp = pkgs.runCommand "dim-mem-world" { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
                         mkdir -p $out/bin
@@ -100,7 +153,7 @@
 
             devShells = forAllSystems (pkgs: {
                 default = pkgs.mkShell {
-                    packages = [ pkgs.rust-bin.stable.latest.default pkgs.nodejs_22 pkgs.onnxruntime ];
+                    packages = [ pkgs.rust-bin.stable.latest.default nixpkgs-deno.legacyPackages.${pkgs.stdenv.hostPlatform.system}.deno pkgs.onnxruntime ];
                     ORT_DYLIB_PATH = onnxLibrary pkgs;
                 };
             });

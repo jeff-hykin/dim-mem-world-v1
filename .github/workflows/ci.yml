@@ -22,3 +22,9 @@ jobs:
             - run: nix build .#dimosApp -L
             # dimos.yaml provides: is what the built server serves at openapi.json (the server prints it)
             - run: result/bin/dimos-app-server --openapi-json > /dev/null
+            # the page's deno: the version the flake builds it with (nixos-25.11's), whose deno.lock this is
+            - uses: denoland/setup-deno@v2
+              with:
+                  deno-version: v2.6.10
+            - run: deno install --frozen && deno task typecheck
+              working-directory: frontend

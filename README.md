@@ -50,10 +50,13 @@ chat can answer "how many traffic cones were seen, and how tall are they?" by ca
 ## Development
 
 ```sh
-nix develop                   # Rust, Node, and ORT_DYLIB_PATH for ONNX Runtime
+nix develop                   # Rust, Deno, and ORT_DYLIB_PATH for ONNX Runtime
 cargo test                    # model tests also need MEMWORLD_MODELS=<a downloaded models folder>
 cargo run -p dimos-app-server -- --port 7790   # then open http://127.0.0.1:7790/
+(cd frontend && deno task dev)  # the page, against a running Desktop (DESKTOP_URL)
+(cd frontend && deno task typecheck)
 nix build .#dimosApp          # what Desktop builds
+deno task update-hashes       # after changing frontend/deno.json or deno.lock: flake.nix's hashes for the page
 ```
 
 After changing an endpoint, regenerate the manifest (a test fails until you do):
