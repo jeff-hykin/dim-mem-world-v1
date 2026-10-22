@@ -1,11 +1,21 @@
 title: Memory World
-spec-version: v1.0 # the dimos.yaml spec version this file follows
+version: "0.2.3"
+spec-version: v1.3 # the dimos.yaml spec version this file follows
 uses:
     # Desktop's shared recordings folder: the page lists it to pick a recording
     "@desktop-gateway":
         - GET /recordings
     # the dim-app SDK's zenoh client: Desktop's "recordings changed" events refresh the picker
     "@zenoh-gateway": ">=0.5 <0.6"
+# spec v1.2: what the page may do on zenoh (dim-app's zenoh.js, as zenoh's ACL config): Desktop's recordings-changed
+# event. Read only: it publishes nothing.
+zenoh:
+    default_permission: deny
+    read:
+        - id: recordings-changed
+          messages: [declare_subscriber, put] # subscribe, and receive its samples
+          key_exprs: ["**/desktop/events/recordings"]
+          permission: allow
 # Desktop's nix builds of this app pull from this cache (.github/workflows/ci.yml fills it)
 caches:
     - url: https://dimos-desktop.cachix.org
