@@ -1,5 +1,5 @@
 title: Memory World
-version: "0.2.3"
+version: "0.2.4"
 spec-version: v1.3 # the dimos.yaml spec version this file follows
 uses:
     # Desktop's shared recordings folder: the page lists it to pick a recording
