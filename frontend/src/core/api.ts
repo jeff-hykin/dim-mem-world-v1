@@ -1,5 +1,5 @@
 // Client for this app's backend (docs/api.md: the same endpoints Desktop's agent calls, at ./api) and Desktop's shared
-// recordings list (../../recordings).
+// recordings list (../../gateways/desktop/recordings).
 
 export type Vec3 = [number, number, number]
 
@@ -211,5 +211,5 @@ export const api = {
 
 /** Desktop's shared recordings folder */
 export const desktop = {
-    recordings: () => call<{ dir: string; extraDirs?: string[]; recordings: DesktopRecording[] }>("../../recordings"),
+    recordings: () => call<{ dir: string; extraDirs?: string[]; recordings: DesktopRecording[] }>("../../gateways/desktop/recordings"),
 }

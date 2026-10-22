@@ -1,10 +1,16 @@
 title: Memory World
 version: "0.2.4"
-spec-version: v1.3 # the dimos.yaml spec version this file follows
+spec-version: v1.4 # the dimos.yaml spec version this file follows
 uses:
     # Desktop's shared recordings folder: the page lists it to pick a recording
     "@desktop-gateway":
         - GET /recordings
+        # the page's uncaught errors go to Desktop's error feed (core/errors.js)
+        - POST /ui/errors
+        # the "Open Recordings" button looks for the Recordings app among the installed apps (dimos-react's desktop.js)
+        - GET /info/apps
+        # the zenoh client asks where the zenoh-gateway and this app's namespace are
+        - GET /management/gateways/zenoh
     # the dim-app SDK's zenoh client: Desktop's "recordings changed" events refresh the picker
     "@zenoh-gateway": ">=0.5 <0.6"
 # Desktop's nix builds of this app pull from this cache (.github/workflows/ci.yml fills it)

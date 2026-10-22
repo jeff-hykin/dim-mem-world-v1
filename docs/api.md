@@ -16,7 +16,7 @@ Coordinates are meters in the recording's world frame (`worldFrame`: `odom`, `ma
 | `GET api/status`                |                       | `AppStatus`                                                                  |
 
 `id` is the file name inside Desktop's recordings folder. The page lists recordings from Desktop's own
-`GET ../../recordings` and opens one by `path`.
+`GET ../../gateways/desktop/recordings` and opens one by `path`.
 
 ```ts
 type Check = {

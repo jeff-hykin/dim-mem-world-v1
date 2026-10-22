@@ -1,4 +1,4 @@
-// Types for the vendored dim-app errors.js (v0.7.0).
+// Types for the vendored dim-app errors.js (v0.23.1).
 export declare function reportError(
     message: string,
     detail?: unknown,

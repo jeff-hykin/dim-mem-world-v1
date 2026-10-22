@@ -1,12 +1,12 @@
-// Errors → Desktop's agent. A page reports what went wrong to Desktop's error feed (`POST /api/errors`), which a
-// connected agent sees (its `recent_errors` tool, and the newest unacknowledged ones in `desktop_context`).
+// Errors → Desktop's agent. A page reports what went wrong to Desktop's error feed (`POST /gateways/desktop/ui/errors`),
+// which a connected agent sees (its `recent_errors` tool, and the newest unacknowledged ones in `desktop_context`).
 //
-//     import { captureErrors, reportError } from "https://esm.sh/gh/jeff-hykin/dim-app@v0.7.0/errors.js"
+//     import { captureErrors, reportError } from "https://esm.sh/gh/jeff-hykin/dim-app@v0.18.0/source/errors.js"
 //     captureErrors()                                   // uncaught errors + unhandled rejections, once per page
 //     reportError("Couldn't save the map", String(e))   // a handled failure the user (and agent) should know about
 //
-// The URL is relative to the app (`/apps/<name>/` → `../../api/errors`). Reporting never throws, and a failed report is
-// dropped (it never reports itself). Throttled: the same message at most once per 10 s, at most 20 reports a minute.
+// The URL is relative to the app (`/apps/<name>/` → `../../gateways/desktop/ui/errors`). Reporting never throws, and a
+// failed report is dropped (it never reports itself). Throttled: the same message at most once per 10 s, at most 20 reports a minute.
 
 const SAME_MESSAGE_MS = 10_000
 const PER_MINUTE = 20
@@ -65,7 +65,7 @@ export async function reportError(message, detail, options = {}) {
         if (detail !== undefined && detail !== null && detail !== "") {
             body.detail = (typeof detail === "string" ? detail : safeString(detail)).slice(0, 20_000)
         }
-        const response = await fetch(new URL("../../api/errors", location.href), {
+        const response = await fetch(new URL("../../gateways/desktop/ui/errors", location.href), {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify(body),
