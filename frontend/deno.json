@@ -17,10 +17,10 @@
         "@types/three": "npm:@types/three@^0.180.0",
         "@vitejs/plugin-react": "npm:@vitejs/plugin-react@^5.1.0",
         "vite": "npm:vite@^7.1.0",
-        "dimos-react": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.1/src/index.ts",
-        "dimos-react/three": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.1/src/three.ts",
-        "dimos-react/dim-app/desktop.js": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.1/src/vendor/dim-app/desktop.js",
-        "dimos-react/dim-app/zenoh.js": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.1/src/vendor/dim-app/zenoh.js"
+        "dimos-react": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.2/src/index.ts",
+        "dimos-react/three": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.2/src/three.ts",
+        "dimos-react/dim-app/desktop.js": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.2/src/vendor/dim-app/desktop.js",
+        "dimos-react/dim-app/zenoh.js": "https://raw.githubusercontent.com/jeff-hykin/dimos-react/v0.3.2/src/vendor/dim-app/zenoh.js"
     },
     "compilerOptions": {
         "jsx": "react-jsx",
