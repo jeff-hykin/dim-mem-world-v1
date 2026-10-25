@@ -1,7 +1,7 @@
-// A Vite plugin that bundles https imports (dimos-react from esm.sh, as deno.json names it) instead of leaving them
-// for the browser: each URL is fetched once into a cache folder, and the modules it imports by absolute path ("/gh/…")
-// or relative path resolve against its URL. Bare imports esm.sh leaves (react, react-dom, three, kept external with
-// ?external=…) resolve to this page's own, so there is one copy of each.
+// A Vite plugin that bundles https imports (dimos-react's source on GitHub, as deno.json names it) instead of leaving
+// them for the browser: each URL is fetched once into a cache folder (vite compiles its TypeScript), and the modules it
+// imports by absolute or relative path resolve against its URL. Its bare imports (react, react-dom, three) resolve to
+// this page's own, so there is one copy of each.
 //   ESM_CACHE   the cache folder (default node_modules/.esm-cache)
 //   ESM_OFFLINE set: a URL not in the cache is an error (nix builds offline from a prefetched cache)
 import { createHash } from "node:crypto"

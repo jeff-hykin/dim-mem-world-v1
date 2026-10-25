@@ -1,5 +1,5 @@
 // Refreshes flake.nix's fixed-output hashes for this machine: the page's `deno install` (frontendModules, one hash per
-// system) and its esm.sh prefetch (frontendEsm, one for all). Each is blanked, built, and set to the hash nix reports.
+// system) and its dimos-react prefetch (frontendEsm, one for all). Each is blanked, built, and set to the hash nix reports.
 // Run after changing frontend/deno.json, deno.lock or the dimos-react tag; other systems' frontendModules hashes are
 // refreshed the same way on a machine of that system (CI's ubuntu runner is x86_64-linux).
 //   deno task update-hashes

@@ -80,7 +80,7 @@
                     };
 
                     pageFiles = frontendFiles [ ./frontend/deno.json ./frontend/deno.lock ./frontend/tsconfig.json ./frontend/index.html ./frontend/vite.config.ts ./frontend/tools ./frontend/src ./frontend/public ];
-                    # dimos-react as esm.sh builds its tag (frontend/tools/esm_fetch.ts): a vite build with network that
+                    # dimos-react's source at its tag (frontend/tools/esm_fetch.ts): a vite build with network that
                     # keeps only what it fetched, so fixed-output; the same on every system. `deno task update-hashes` refreshes it.
                     frontendEsm = pkgs.stdenvNoCC.mkDerivation {
                         name = "dim-mem-world-frontend-esm";
@@ -97,10 +97,10 @@
                         dontFixup = true;
                         outputHashMode = "recursive";
                         outputHashAlgo = "sha256";
-                        outputHash = "sha256-xv/I1r8q+favaSXBdjEG8QrtaTWsSXKHeV4SQ7pHCw8=";
+                        outputHash = "sha256-vNYJjZRSNzOMSicRHzaHCm606BuSx9MLq/OcDsNf9fg=";
                     };
 
-                    # the page: React + Vite against those modules and that esm.sh cache, offline
+                    # the page: React + Vite against those modules and that dimos-react cache, offline
                     frontend = pkgs.stdenvNoCC.mkDerivation {
                         name = "dim-mem-world-frontend";
                         src = pageFiles;
