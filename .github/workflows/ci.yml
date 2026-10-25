@@ -22,6 +22,9 @@ jobs:
             - run: nix build .#dimosApp -L
             # dimos.yaml provides: is what the built server serves at openapi.json (the server prints it)
             - run: result/bin/dimos-app-server --openapi-json > /dev/null
+            # dimos.yaml's version is the app's own, so the crate's has to say the same (it is what a recording's
+            # app_version and the startup log line are)
+            - run: scripts/check_version.sh
             # the page's deno: the version the flake builds it with (nixos-25.11's), whose deno.lock this is
             - uses: denoland/setup-deno@v2
               with:
