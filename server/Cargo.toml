@@ -1,6 +1,6 @@
 [package]
 name = "dimos-app-server"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Memory World's backend for dimOS Desktop"
 license = "Apache-2.0"

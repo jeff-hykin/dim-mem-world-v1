@@ -1,5 +1,5 @@
 title: Memory World
-version: "0.4.0" # this app's own version (its latest release tag); server/Cargo.toml has to match
+version: "0.4.1" # this app's own version (its latest release tag); server/Cargo.toml has to match
 spec-version: v1.5 # the dimos.yaml spec version this file follows
 uses:
     # Desktop's shared recordings folder: the page lists it to pick a recording
