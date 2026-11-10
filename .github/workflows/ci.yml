@@ -9,7 +9,7 @@ jobs:
             fail-fast: false
             matrix:
                 # each built natively (the server loads a native ONNX Runtime)
-                os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, macos-15-intel]
+                os: [ubuntu-latest, ubuntu-24.04-arm, macos-15] # no Intel Mac: nixpkgs 26.11 dropped x86_64-darwin
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
                   key=$(mktemp) && printf '%s' "$NIX_SIGNING_KEY" > "$key"
                   nix copy --to "s3://dimos-nix-cache?endpoint=$R2_CACHE_ENDPOINT&region=auto&secret-key=$key" "$out"
                   rm -f "$key"
-                  curl -sfI "https://pub-18ed8210d82a4563a7e7269c4ce48a1c.r2.dev/$(basename "$out" | cut -c1-32).narinfo" > /dev/null || { echo "::error::.#dimosApp ($out) isn't in the R2 cache"; exit 1; }
+                  curl -sfI --retry 5 --retry-all-errors "https://pub-18ed8210d82a4563a7e7269c4ce48a1c.r2.dev/$(basename "$out" | cut -c1-32).narinfo" > /dev/null || { echo "::error::.#dimosApp ($out) isn't in the R2 cache"; exit 1; }
               env:
                   R2_CACHE_ENDPOINT: ${{ vars.R2_CACHE_ENDPOINT }}
                   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
